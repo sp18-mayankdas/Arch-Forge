@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg-base: #0e0e0e;
+  --color-bg-surface: #141414;
+  --color-bg-elevated: #1a1a1a;
+  --color-bg-subtle: #222222;
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-text-primary: #ededed;
+  --color-text-secondary: #a0a0a0;
+  --color-text-muted: #6b6b6b;
+  --color-text-faint: #444444;
+  --color-accent-ai: #6457f9;
+  --color-accent-ai-text: #a89dfc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.react-flow__renderer {
+  background: var(--color-bg-base);
+}
+
+/* React Flow Controls — make icons visible on dark background */
+.react-flow__controls {
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: #1a1a1a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  transition: background 0.15s;
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 14px;
+  max-height: 14px;
+}
