@@ -47,15 +47,21 @@ archforge/
 - **Frontend connects directly to the backend — there is no Vite proxy.** URLs come from
   `apps/frontend/src/lib/config.ts` (`API_URL`/`WS_URL`), which read `VITE_API_URL`/`VITE_WS_URL` and
   default to `http://localhost:3001` / `ws://localhost:3001`. Backend CORS is `origin: "*"`.
-- **AI generation** lives in `apps/backend/src/routes/ai.ts` (`POST /api/generate`), using Claude tool
-  calling (`add_node`, `add_edge`, `finalize_design`) → returns `{ nodes, edges, summary }`.
+- **AI generation** lives in `apps/backend/src/routes/ai.ts` (`POST /api/generate`) → returns
+  `{ nodes, edges, summary }`. It uses the **`openai` SDK against an OpenAI-compatible provider**
+  (defaults to NVIDIA's free hosted models at `integrate.api.nvidia.com/v1`). The model is prompted to
+  return a single JSON object which is parsed robustly (`extractJson`) and mapped through
+  `NODE_COLORS`/`SHAPE_DEFAULTS`. Provider/model/key are env-driven (`AI_BASE_URL`, `AI_MODEL`,
+  `AI_API_KEY`) — swap to OpenAI, a local Ollama/LM Studio server, etc. by editing `.env` only.
 - **Multiplayer** uses Yjs + y-websocket. The backend serves both HTTP and the Yjs WebSocket on port 3001.
   Room is the `?room=<id>` URL param — sharing the URL shares the room.
 
 ## Environment
 
-- **Backend needs `apps/backend/.env`** with `ANTHROPIC_API_KEY` (required for AI generation) and
-  optional `PORT` (default 3001). Copy from `apps/backend/.env.example`.
+- **Backend needs `apps/backend/.env`** with `AI_API_KEY` (a free `nvapi-...` key from build.nvidia.com),
+  `AI_BASE_URL` (defaults to NVIDIA's endpoint), `AI_MODEL` (copy the exact id from the model's
+  build.nvidia.com page — prefer an *instruct* model), and optional `PORT` (default 3001). Copy from
+  `apps/backend/.env.example`. Restart the backend after editing `.env` (dotenv reads once at startup).
 - **Frontend needs no env for local dev** — defaults are baked in. Set `apps/frontend/.env`
   (`VITE_API_URL`, `VITE_WS_URL`) only to target a remote backend (staging/prod; use `wss://` behind TLS).
 - All `.env` files are gitignored. Never commit secrets.

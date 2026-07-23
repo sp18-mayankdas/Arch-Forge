@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, KeyboardEvent } from "react";
-import { Bot, Send, Loader2, X, Sparkles } from "lucide-react";
+import { Bot, Send, Loader2, X, Sparkles, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { API_URL } from "@/lib/config";
 import type { CanvasNode, CanvasEdge } from "@/types/canvas";
@@ -29,6 +29,7 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -57,11 +58,15 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
     }
     scrollToBottom();
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const res = await fetch(`${API_URL}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: text }),
+        signal: controller.signal,
       });
 
       if (!res.ok) throw new Error("Generation failed");
@@ -80,18 +85,26 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
         content: data.summary,
       };
       setMessages((prev) => [...prev, assistantMsg]);
-    } catch {
-      const errMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "Failed to generate architecture. Please try again.",
-      };
-      setMessages((prev) => [...prev, errMsg]);
+    } catch (err) {
+      // Silently ignore user-initiated stops; only surface real failures.
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        const errMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: "Failed to generate architecture. Please try again.",
+        };
+        setMessages((prev) => [...prev, errMsg]);
+      }
     } finally {
+      abortRef.current = null;
       setIsLoading(false);
       scrollToBottom();
     }
   }, [input, isLoading, onApplyDesign, scrollToBottom]);
+
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -224,18 +237,25 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
           />
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-white/25">Shift+Enter for newline</span>
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || isLoading}
-              className="flex h-7 items-center gap-1.5 rounded-lg bg-[#6457f9] px-3 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-            >
-              {isLoading ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
+            {isLoading ? (
+              <button
+                onClick={handleStop}
+                title="Stop generating"
+                className="flex h-7 items-center gap-1.5 rounded-lg bg-red-500/90 px-3 text-xs font-medium text-white transition-opacity hover:opacity-90"
+              >
+                <Square className="h-3 w-3 fill-current" />
+                Stop
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="flex h-7 items-center gap-1.5 rounded-lg bg-[#6457f9] px-3 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
                 <Send className="h-3 w-3" />
-              )}
-              {isLoading ? "Thinking…" : "Generate"}
-            </button>
+                Generate
+              </button>
+            )}
           </div>
         </div>
       </div>

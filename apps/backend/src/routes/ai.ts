@@ -1,10 +1,17 @@
 import { Router } from "express";
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { NODE_COLORS, SHAPE_DEFAULTS, type NodeShape } from "@archforge/shared";
 
 const router = Router();
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Provider-agnostic, OpenAI-compatible client. Defaults target NVIDIA's free hosted
+// models (build.nvidia.com), but AI_BASE_URL/AI_MODEL can point at OpenAI, a local
+// Ollama/LM Studio server, or any OpenAI-compatible gateway via apps/backend/.env.
+const client = new OpenAI({
+  apiKey: process.env.AI_API_KEY,
+  baseURL: process.env.AI_BASE_URL ?? "https://integrate.api.nvidia.com/v1",
+});
+const MODEL = process.env.AI_MODEL ?? "meta/llama-3.3-70b-instruct";
 
 const COLOR_NAMES = ["neutral", "blue", "purple", "orange", "red", "pink", "green", "teal"];
 
@@ -45,66 +52,25 @@ LAYOUT RULES:
 GENERATION RULES:
 - Create 5-12 nodes; do not overcrowd
 - Add edges to show data/request flow
-- Prefer clear left-to-right or top-to-bottom flows`;
+- Prefer clear left-to-right or top-to-bottom flows
+
+OUTPUT FORMAT:
+Respond with ONLY a single JSON object (no prose, no markdown code fences, no explanation)
+matching exactly this shape:
+{
+  "nodes": [
+    { "id": "api-gateway", "label": "API Gateway", "shape": "rectangle", "colorIndex": 1, "x": 100, "y": 80 }
+  ],
+  "edges": [
+    { "id": "edge-api-db", "source": "api-gateway", "target": "user-db", "label": "reads/writes" }
+  ],
+  "summary": "1-2 sentence description of the architecture"
+}
+Rules: "shape" must be one of the allowed shapes; "colorIndex" is an integer 0-7;
+"x"/"y" are numbers; "label" on edges is optional. Output nothing but the JSON object.`;
 }
 
-const tools: Anthropic.Tool[] = [
-  {
-    name: "add_node",
-    description: "Add a new node to the architecture canvas",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        id: { type: "string", description: 'Unique slug ID e.g. "api-gateway", "user-db"' },
-        label: { type: "string", description: "Display label for the node" },
-        shape: {
-          type: "string",
-          enum: ["rectangle", "diamond", "circle", "pill", "cylinder", "hexagon"],
-          description: "Node shape",
-        },
-        colorIndex: {
-          type: "number",
-          description: "Color palette index 0-7",
-          minimum: 0,
-          maximum: 7,
-        },
-        x: { type: "number", description: "X position in pixels" },
-        y: { type: "number", description: "Y position in pixels" },
-      },
-      required: ["id", "label", "shape", "colorIndex", "x", "y"],
-    },
-  },
-  {
-    name: "add_edge",
-    description: "Add a directed edge between two nodes",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        id: { type: "string", description: 'Unique edge ID e.g. "edge-api-db"' },
-        source: { type: "string", description: "Source node ID" },
-        target: { type: "string", description: "Target node ID" },
-        label: { type: "string", description: "Optional edge label" },
-      },
-      required: ["id", "source", "target"],
-    },
-  },
-  {
-    name: "finalize_design",
-    description: "Complete the design — call this last with a summary",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        summary: {
-          type: "string",
-          description: "1-2 sentence description of the architecture designed",
-        },
-      },
-      required: ["summary"],
-    },
-  },
-];
-
-interface AddNodeInput {
+interface AiNode {
   id: string;
   label: string;
   shape: string;
@@ -113,15 +79,32 @@ interface AddNodeInput {
   y: number;
 }
 
-interface AddEdgeInput {
+interface AiEdge {
   id: string;
   source: string;
   target: string;
   label?: string;
 }
 
-interface FinalizeInput {
-  summary: string;
+interface AiDesign {
+  nodes?: AiNode[];
+  edges?: AiEdge[];
+  summary?: string;
+}
+
+// Robustly pull a JSON object out of a model response. Handles models that wrap
+// output in ```json fences or add stray prose/reasoning around the object.
+function extractJson(raw: string): AiDesign {
+  let text = raw.trim();
+  // Strip a leading/trailing markdown code fence if present.
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+  // Fall back to the substring between the first "{" and the last "}".
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    text = text.slice(first, last + 1);
+  }
+  return JSON.parse(text) as AiDesign;
 }
 
 router.post("/generate", async (req, res) => {
@@ -132,71 +115,52 @@ router.post("/generate", async (req, res) => {
       return;
     }
 
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: buildSystemPrompt(),
+    const completion = await client.chat.completions.create({
+      model: MODEL,
+      temperature: 0.6,
+      // Generous budget: reasoning-style models spend tokens on a think phase
+      // before emitting the JSON, so a small cap can truncate the answer.
+      max_tokens: 8192,
       messages: [
-        {
-          role: "user",
-          content: `Design this architecture on the canvas: ${prompt}\n\nCall add_node for each node, add_edge for each connection, then finalize_design with a summary.`,
-        },
+        { role: "system", content: buildSystemPrompt() },
+        { role: "user", content: `Design this architecture: ${prompt}` },
       ],
-      tools,
-      tool_choice: { type: "auto" },
     });
 
-    const nodes: Array<{
-      id: string;
-      type: "canvasNode";
-      position: { x: number; y: number };
-      data: { label: string; color: string; textColor: string; shape: string };
-      width: number;
-      height: number;
-    }> = [];
+    const raw = completion.choices[0]?.message?.content ?? "";
 
-    const edges: Array<{
-      id: string;
-      type: "canvasEdge";
-      source: string;
-      target: string;
-      data: { label: string };
-      markerEnd: { type: string; color: string; width: number; height: number };
-    }> = [];
-
-    let summary = "Design applied to canvas.";
-
-    for (const block of response.content) {
-      if (block.type !== "tool_use") continue;
-
-      if (block.name === "add_node") {
-        const input = block.input as AddNodeInput;
-        const ci = Math.min(Math.max(Math.round(input.colorIndex ?? 0), 0), NODE_COLORS.length - 1);
-        const color = NODE_COLORS[ci];
-        const size = SHAPE_DEFAULTS[input.shape as NodeShape] ?? SHAPE_DEFAULTS.rectangle;
-        nodes.push({
-          id: input.id,
-          type: "canvasNode",
-          position: { x: input.x, y: input.y },
-          data: { label: input.label, color: color.fill, textColor: color.text, shape: input.shape },
-          width: size.width,
-          height: size.height,
-        });
-      } else if (block.name === "add_edge") {
-        const input = block.input as AddEdgeInput;
-        edges.push({
-          id: input.id,
-          type: "canvasEdge",
-          source: input.source,
-          target: input.target,
-          data: { label: input.label ?? "" },
-          markerEnd: { type: "arrowclosed", color: "rgba(255,255,255,0.4)", width: 16, height: 16 },
-        });
-      } else if (block.name === "finalize_design") {
-        const input = block.input as FinalizeInput;
-        summary = input.summary;
-      }
+    let design: AiDesign;
+    try {
+      design = extractJson(raw);
+    } catch (parseErr) {
+      console.error("AI generate: failed to parse JSON. Raw model output:\n", raw);
+      throw parseErr;
     }
+
+    const nodes = (design.nodes ?? []).map((n) => {
+      const ci = Math.min(Math.max(Math.round(n.colorIndex ?? 0), 0), NODE_COLORS.length - 1);
+      const color = NODE_COLORS[ci];
+      const size = SHAPE_DEFAULTS[n.shape as NodeShape] ?? SHAPE_DEFAULTS.rectangle;
+      return {
+        id: n.id,
+        type: "canvasNode" as const,
+        position: { x: n.x, y: n.y },
+        data: { label: n.label, color: color.fill, textColor: color.text, shape: n.shape },
+        width: size.width,
+        height: size.height,
+      };
+    });
+
+    const edges = (design.edges ?? []).map((e) => ({
+      id: e.id,
+      type: "canvasEdge" as const,
+      source: e.source,
+      target: e.target,
+      data: { label: e.label ?? "" },
+      markerEnd: { type: "arrowclosed", color: "rgba(255,255,255,0.4)", width: 16, height: 16 },
+    }));
+
+    const summary = design.summary ?? "Design applied to canvas.";
 
     res.json({ nodes, edges, summary });
   } catch (error) {

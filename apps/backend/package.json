@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@archforge/shared": "workspace:*",
-    "@anthropic-ai/sdk": "^0.54.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "openai": "^6.48.0",
     "ws": "^8.18.0",
     "y-websocket": "^2.1.0",
     "yjs": "^13.6.20"
