@@ -32,7 +32,23 @@ export function getUserInfo() {
   return info;
 }
 
-export function createRoom(roomId: string) {
+export interface Room {
+  doc: Y.Doc;
+  provider: WebsocketProvider;
+  nodesMap: Y.Map<Y.Map<unknown>>;
+  edgesMap: Y.Map<Y.Map<unknown>>;
+  user: ReturnType<typeof getUserInfo>;
+}
+
+// One room (and therefore one WebSocket connection) per roomId per page.
+// React 18 StrictMode double-invokes render/useMemo in dev; without this cache
+// that would open a second connection and show a phantom extra collaborator.
+const roomCache = new Map<string, Room>();
+
+export function createRoom(roomId: string): Room {
+  const cached = roomCache.get(roomId);
+  if (cached) return cached;
+
   const doc = new Y.Doc();
   // Connect straight to the backend Yjs WebSocket (no Vite proxy). The provider
   // appends the room id, so the backend receives ws://<host>/<roomId>.
@@ -45,5 +61,7 @@ export function createRoom(roomId: string) {
   provider.awareness.setLocalStateField("user", user);
   provider.awareness.setLocalStateField("cursor", null);
 
-  return { doc, provider, nodesMap, edgesMap, user };
+  const room: Room = { doc, provider, nodesMap, edgesMap, user };
+  roomCache.set(roomId, room);
+  return room;
 }

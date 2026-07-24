@@ -1,17 +1,36 @@
 import { Router } from "express";
-import OpenAI from "openai";
+import OpenAI, { AzureOpenAI } from "openai";
 import { NODE_COLORS, SHAPE_DEFAULTS, type NodeShape } from "@archforge/shared";
 
 const router = Router();
 
-// Provider-agnostic, OpenAI-compatible client. Defaults target NVIDIA's free hosted
-// models (build.nvidia.com), but AI_BASE_URL/AI_MODEL can point at OpenAI, a local
-// Ollama/LM Studio server, or any OpenAI-compatible gateway via apps/backend/.env.
-const client = new OpenAI({
-  apiKey: process.env.AI_API_KEY,
-  baseURL: process.env.AI_BASE_URL ?? "https://integrate.api.nvidia.com/v1",
-});
-const MODEL = process.env.AI_MODEL ?? "meta/llama-3.3-70b-instruct";
+// Provider switch via AI_PROVIDER:
+//   "azure"  -> Azure OpenAI (endpoint + deployment + api-version)
+//   anything else / unset -> generic OpenAI-compatible (NVIDIA, OpenAI, local Ollama…)
+const PROVIDER = (process.env.AI_PROVIDER ?? "openai").toLowerCase();
+
+function makeClient(): OpenAI {
+  if (PROVIDER === "azure") {
+    return new AzureOpenAI({
+      apiKey: process.env.AZURE_OPENAI_API_KEY,
+      endpoint: process.env.AZURE_OPENAI_ENDPOINT,
+      deployment: process.env.AZURE_OPENAI_DEPLOYMENT,
+      apiVersion: process.env.AZURE_OPENAI_API_VERSION ?? "2024-10-21",
+    });
+  }
+  return new OpenAI({
+    apiKey: process.env.AI_API_KEY,
+    baseURL: process.env.AI_BASE_URL ?? "https://integrate.api.nvidia.com/v1",
+  });
+}
+
+const client = makeClient();
+
+// For Azure the "model" sent on each request is the deployment name.
+const MODEL =
+  PROVIDER === "azure"
+    ? process.env.AZURE_OPENAI_DEPLOYMENT ?? ""
+    : process.env.AI_MODEL ?? "meta/llama-3.3-70b-instruct";
 
 const COLOR_NAMES = ["neutral", "blue", "purple", "orange", "red", "pink", "green", "teal"];
 
@@ -53,6 +72,14 @@ GENERATION RULES:
 - Create 5-12 nodes; do not overcrowd
 - Add edges to show data/request flow
 - Prefer clear left-to-right or top-to-bottom flows
+
+WHEN TO GENERATE (IMPORTANT):
+- Only produce nodes/edges when the user is actually describing or asking you to design or modify a
+  software/system architecture.
+- If the message is a greeting, small talk, a question about you, unclear, or NOT an architecture
+  request (e.g. "hi", "hello", "what can you do?"), return "nodes": [] and "edges": [] and put a short,
+  friendly one-line reply in "summary" inviting them to describe a system. Do NOT invent an
+  architecture in that case.
 
 OUTPUT FORMAT:
 Respond with ONLY a single JSON object (no prose, no markdown code fences, no explanation)
@@ -123,7 +150,7 @@ router.post("/generate", async (req, res) => {
       max_tokens: 8192,
       messages: [
         { role: "system", content: buildSystemPrompt() },
-        { role: "user", content: `Design this architecture: ${prompt}` },
+        { role: "user", content: prompt },
       ],
     });
 
