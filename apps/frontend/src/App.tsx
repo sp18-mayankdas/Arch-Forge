@@ -38,13 +38,16 @@ export default function App() {
     });
 
   useEffect(() => {
+    setConnected(provider.wsconnected);
     const onStatus = ({ status }: { status: string }) => {
       setConnected(status === "connected");
     };
     provider.on("status", onStatus);
+    // Note: the provider is a cached singleton (see createRoom) that lives for the
+    // page's lifetime, so we only detach the listener here — no disconnect, which
+    // would otherwise drop the connection during StrictMode's mount/unmount cycle.
     return () => {
       provider.off("status", onStatus);
-      provider.disconnect();
     };
   }, [provider]);
 

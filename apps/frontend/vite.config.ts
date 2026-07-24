@@ -13,5 +13,21 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Allow any Host header so the dev server works behind a tunnel (ngrok, etc.).
+    allowedHosts: true,
+    // Same-origin proxy to the backend so the whole app is reachable through ONE
+    // origin/tunnel. /api → REST, /yjs → Yjs WebSocket (strip the /yjs prefix).
+    proxy: {
+      "/api": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      },
+      "/yjs": {
+        target: "ws://localhost:3001",
+        ws: true,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/yjs/, ""),
+      },
+    },
   },
 });
