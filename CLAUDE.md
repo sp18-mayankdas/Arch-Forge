@@ -1,9 +1,9 @@
 # ArchForge
 
-ArchForge is a multiplayer architecture canvas: describe a system in natural language and an AI
-assistant (Claude `claude-sonnet-4-6`) generates a live architecture diagram, synced in real time
-across browser tabs via Yjs CRDT. MVP scope is exactly two features — AI prompt → architecture
-generation, and real-time multiplayer canvas with live presence cursors.
+ArchForge is a multiplayer architecture canvas: describe a system in natural language and an LLM
+generates a live architecture diagram, synced in real time across browser tabs via Yjs CRDT. MVP
+scope is exactly two features — AI prompt → architecture generation, and real-time multiplayer
+canvas with live presence cursors. The model is provider-agnostic (see **AI generation** below).
 
 ## Monorepo layout (pnpm + Turborepo)
 
@@ -11,22 +11,23 @@ generation, and real-time multiplayer canvas with live presence cursors.
 archforge/
 ├── apps/
 │   ├── frontend/   @archforge/frontend  — Vite + React 18 + TS + TailwindCSS v4 + React Flow + Yjs (port 5173)
-│   └── backend/    @archforge/backend   — Express + y-websocket + Anthropic SDK (port 3001)
+│   └── backend/    @archforge/backend   — Express + y-websocket + `openai` SDK (port 3001)
 └── packages/
     └── shared/     @archforge/shared    — shared TS types & constants (consumed as RAW TS, no build)
 ```
 
 ## Commands (run from the repo root)
 
-| Command | What it does |
-|---|---|
-| `pnpm install` | Install everything for all packages (one command) |
-| `pnpm dev` | Turbo runs frontend (:5173) + backend (:3001) in parallel |
-| `pnpm dev:frontend` / `pnpm dev:backend` | Run just one app |
-| `pnpm build` | Build all (see backend caveat below) |
-| `pnpm type-check` | `tsc --noEmit` across all three packages |
-| `pnpm lint` | ESLint across all packages |
-| `pnpm --filter @archforge/frontend <script>` | Target a single package |
+| Command                                      | What it does                                              |
+| --------------------------------------------- | --------------------------------------------------------- |
+| `pnpm install`                               | Install everything for all packages (one command)         |
+| `pnpm dev`                                   | Turbo runs frontend (:5173) + backend (:3001) in parallel |
+| `pnpm dev:frontend` / `pnpm dev:backend`     | Run just one app                                          |
+| `pnpm build`                                 | Build all (see backend caveat below)                      |
+| `pnpm type-check`                            | `tsc --noEmit` across all three packages                  |
+| `pnpm lint`                                  | ESLint across all packages                                |
+| `pnpm test`                                  | Vitest across all three packages (see **Testing** below)  |
+| `pnpm --filter @archforge/frontend <script>` | Target a single package                                   |
 
 ## Hard rules
 
@@ -38,12 +39,36 @@ archforge/
 
 ## Architecture notes
 
-- **`@archforge/shared`** exports `NODE_SHAPES`, `NodeShape`, `NODE_COLORS`, `SHAPE_DEFAULTS`,
-  `CanvasNodeData`, `CanvasEdgeData`. `NODE_COLORS` entries are `{ fill, text }` (not `color/textColor`).
-  `CanvasNodeData`/`CanvasEdgeData` extend `Record<string, unknown>` (required by React Flow's data generic).
-  Resolved via a Vite alias + tsconfig `paths` (frontend) and `tsconfig-paths/register` at runtime (backend).
+### Node types
+
+- **`packages/shared/src/node-types.ts`** holds a closed 15-member `NODE_TYPES` enum and
+  `NODE_TYPE_REGISTRY`. Node **type derives shape and colour** — `shape`/`color`/`textColor` are not
+  stored on nodes and are not in the AI contract. `CanvasNodeData` is `{ label, type }`.
+- Each registry entry declares fields for four consumers: renderer (`shape`, `colorIndex`, `icon`,
+  `defaultLabel`), lint predicates (`isDatastore`, `isIngress`, `absorbsLoad`), load simulator
+  (`capacityRps`, `latencyMs`, `cacheHitRatio?`) and scaffold (`templateKey`). **Only the renderer
+  fields are consumed today** — the rest are inert data for planned engines. Do not delete them as
+  dead code, and do not render `icon` yet.
+- The enum is a public interface across those consumers. Changing an existing entry's _meaning_ is a
+  breaking change even though nothing types it as an API. `client.capacityRps` is `0` meaning "load
+  source, capacity not applicable" — a future simulator must ignore it, not treat it as a bottleneck.
+- `isNodeType()` is the guard for untrusted input (model output, wire data).
+
+### Shared package layout
+
+- **`packages/shared/src/`** is three modules re-exported from `index.ts`: `presentation.ts`
+  (`NODE_SHAPES`, `NodeShape`, `NODE_COLORS`, `SHAPE_DEFAULTS`), `node-types.ts` (the enum + registry),
+  `semantic.ts` (`SemanticNode`, `SemanticEdge`, `SemanticOp`, `serializeGraph`). `presentation.ts`
+  exists as its own file so `node-types.ts` can import `NodeShape` without a cycle through `index.ts`.
+  `NODE_COLORS` entries are `{ fill, text }` (not `color`/`textColor`).
+- `CanvasNodeData`/`CanvasEdgeData` extend `Record<string, unknown>` (required by React Flow's data
+  generic). Resolved via a Vite alias + tsconfig `paths` (frontend) and `tsconfig-paths/register` at
+  runtime (backend), plus a matching alias in each `vitest.config.ts`.
 - **`CanvasNode`/`CanvasEdge`/`UserAwareness`** stay local in `apps/frontend/src/types/canvas.ts` because
   they depend on `@xyflow/react`. That file re-exports the shared pieces so existing imports keep working.
+- `serializeGraph()` picks fields explicitly and never spreads its input — a spread would carry
+  presentation keys into a prompt the moment a caller passed a React Flow node.
+
 - **Frontend connects directly to the backend — there is no Vite proxy.** URLs come from
   `apps/frontend/src/lib/config.ts` (`API_URL`/`WS_URL`), which read `VITE_API_URL`/`VITE_WS_URL` and
   default to `http://localhost:3001` / `ws://localhost:3001`. Backend CORS is `origin: "*"`.
@@ -55,6 +80,12 @@ archforge/
   `NODE_COLORS`/`SHAPE_DEFAULTS`. Switch providers by editing `.env` only — no code changes.
 - **Multiplayer** uses Yjs + y-websocket. The backend serves both HTTP and the Yjs WebSocket on port 3001.
   Room is the `?room=<id>` URL param — sharing the URL shares the room.
+
+## Testing
+
+- `pnpm test` runs Vitest in all three packages (node environment, no jsdom). Frontend and backend set
+  `passWithNoTests` so a package with no test files does not fail the suite.
+- Tests live beside their subject as `src/**/*.test.ts`.
 
 ## Environment
 
@@ -74,6 +105,8 @@ archforge/
   `pkill -f turbo; pkill -f ts-node-dev; pkill -f vite`.
 - The backend has graceful shutdown (SIGTERM/SIGINT → closes WS clients cleanly, releases the port),
   so a normal restart no longer resets live sockets.
+- **`packages/shared/tsconfig.json` sets `target`/`lib` to `ES2020`** to match both apps. `tsconfig.base.json`
+  sets neither, so without it tsc defaults to ES5 and rejects `Number.isFinite`, `Array.includes` and friends.
 - **Backend `build` caveat:** `pnpm --filter @archforge/backend build` (plain `tsc`) is imperfect because
   `@archforge/shared` is consumed as raw TS from outside `src`. The verified run paths are `pnpm dev`
   and `type-check`. If a compiled backend `dist/` is ever needed, bundle with `tsup`/`esbuild` (inlining
