@@ -75,14 +75,17 @@ archforge/
   `apps/frontend/src/lib/config.ts` (`API_URL`/`WS_URL`), which read `VITE_API_URL`/`VITE_WS_URL` and
   default to `http://localhost:3001` / `ws://localhost:3001`. Backend CORS is `origin: "*"`.
 - **AI generation** lives in `apps/backend/src/routes/ai.ts` (`POST /api/generate`) → returns
-  `{ nodes, edges, summary }`. It uses the **`openai` SDK** with a provider switch (`AI_PROVIDER`):
-  `azure` → `AzureOpenAI` (AZURE_OPENAI_* vars); `nvidia` → OpenAI-compatible with NVIDIA NIM defaults
-  (NVIDIA_AI_* vars); `groq` → Groq free tier (GROQ_AI_* vars); `openai` → generic OpenAI-compatible
-  (any other provider: OpenRouter, real OpenAI, local Ollama, …; AI_* vars). Either way the model is
-  prompted to return a single JSON object, parsed robustly (`extractJson`) and mapped through
-  `NODE_COLORS`/`SHAPE_DEFAULTS`. Switch providers by editing `.env` only — no code changes.
+  `{ nodes, edges, summary }` as **semantic records only**. It uses the **`openai` SDK** with a provider
+  switch (`AI_PROVIDER`): `azure` → `AzureOpenAI` (AZURE_OPENAI_* vars); `nvidia` → OpenAI-compatible
+  with NVIDIA NIM defaults (NVIDIA_AI_* vars); `groq` → Groq free tier (GROQ_AI_* vars); `openai` → generic
+  OpenAI-compatible (any other provider: OpenRouter, real OpenAI, local Ollama, …; AI_* vars). Switch
+  providers by editing `.env` only — no code changes.
 - The client is built **lazily** via `getClient()`, not at import time: a missing key surfaces as a 500
   on `/api/generate` instead of crashing at boot, and it keeps the module importable by tests.
+- The model is prompted for a single JSON object of `{ id, type, label }` nodes and `{ id, source,
+target, label? }` edges, parsed by `extractJson`, then run through **`validateDesign`** — which coerces
+  an unknown `type` to `service` with a warning, drops missing/duplicate ids, and drops edges pointing
+  at nodes that were not declared. Forgiving by design: one bad field must never cost a whole generation.
 - **Multiplayer** uses Yjs + y-websocket. The backend serves both HTTP and the Yjs WebSocket on port 3001.
   Room is the `?room=<id>` URL param — sharing the URL shares the room.
 

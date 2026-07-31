@@ -1,6 +1,13 @@
 import { Router } from "express";
 import OpenAI, { AzureOpenAI } from "openai";
-import { NODE_COLORS, SHAPE_DEFAULTS, type NodeShape } from "@archforge/shared";
+import {
+  NODE_TYPES,
+  NODE_TYPE_REGISTRY,
+  isNodeType,
+  type NodeType,
+  type SemanticNode,
+  type SemanticEdge,
+} from "@archforge/shared";
 
 const router = Router();
 
@@ -60,46 +67,30 @@ const MODEL =
         ? process.env.GROQ_AI_MODEL ?? "llama-3.3-70b-versatile"
         : process.env.AI_MODEL ?? "";
 
-const COLOR_NAMES = ["neutral", "blue", "purple", "orange", "red", "pink", "green", "teal"];
-
 function buildSystemPrompt(): string {
-  const colorGuide = NODE_COLORS.map(
-    (c, i) => `  ${i} (${COLOR_NAMES[i]}): fill=${c.fill} text=${c.text}`
+  const typeGuide = NODE_TYPES.map(
+    (t) => `- ${t} → ${NODE_TYPE_REGISTRY[t].defaultLabel}`,
   ).join("\n");
 
   return `You are ArchForge, an expert system architect that generates technical architecture diagrams.
 
-ALLOWED SHAPES:
-- rectangle  → services, APIs, microservices, components
-- cylinder   → databases, storage, caches
-- hexagon    → external systems, third-party services, boundaries
-- circle     → events, triggers, endpoints, user entry-points
-- diamond    → decision gateways, conditionals
-- pill       → processes, workflows, jobs
+You describe TOPOLOGY ONLY. You never choose positions, colours, sizes or shapes —
+the client derives all of those from the node type. Do not emit them.
 
-COLOR PALETTE (colorIndex 0-7):
-${colorGuide}
-Recommended mapping:
-- 1 (blue)   → APIs, services, servers
-- 7 (teal)   → databases, storage
-- 3 (orange) → message queues, brokers, async flows
-- 6 (green)  → success paths, healthy services, CDN
-- 2 (purple) → auth, security, identity
-- 5 (pink)   → user-facing UI, clients
-- 0 (neutral)→ generic / unclassified
-
-LAYOUT RULES:
-- Start top-left at approximately x=100, y=80
-- Horizontal gap between sibling nodes: 240-280px
-- Vertical gap between rows: 160-200px
-- Group related nodes in horizontal rows
-- Node IDs must be unique short slugs e.g. "api-gateway", "user-db"
-- Edge IDs must be unique e.g. "edge-api-db"
+ALLOWED NODE TYPES (use the exact value on the left):
+${typeGuide}
 
 GENERATION RULES:
-- Create 5-12 nodes; do not overcrowd
+- Node count scales with described complexity. A simple system gets 5-12 nodes. A system
+  describing many distinct modules/services (e.g. 8-10+ named features) gets one node per
+  distinct module — do not merge separate modules into one node just to stay small. Up to
+  30 nodes for large multi-module systems.
+- Do not pad a simple system with filler nodes to look detailed.
 - Add edges to show data/request flow
-- Prefer clear left-to-right or top-to-bottom flows
+- Node IDs must be unique short slugs e.g. "api-gateway", "user-db"
+- Edge IDs must be unique e.g. "edge-api-db"
+- Every edge's source and target must be an id you also declared in "nodes"
+- "label" is the human-readable name shown on the node, e.g. "Orders DB"
 
 WHEN TO GENERATE (IMPORTANT):
 - Only produce nodes/edges when the user is actually describing or asking you to design or modify a
@@ -114,30 +105,28 @@ Respond with ONLY a single JSON object (no prose, no markdown code fences, no ex
 matching exactly this shape:
 {
   "nodes": [
-    { "id": "api-gateway", "label": "API Gateway", "shape": "rectangle", "colorIndex": 1, "x": 100, "y": 80 }
+    { "id": "api-gateway", "type": "api_gateway", "label": "API Gateway" }
   ],
   "edges": [
     { "id": "edge-api-db", "source": "api-gateway", "target": "user-db", "label": "reads/writes" }
   ],
   "summary": "1-2 sentence description of the architecture"
 }
-Rules: "shape" must be one of the allowed shapes; "colorIndex" is an integer 0-7;
-"x"/"y" are numbers; "label" on edges is optional. Output nothing but the JSON object.`;
+Rules: "type" must be exactly one of the allowed node types listed above; "label" on edges is
+optional. Never include x, y, shape, colour or size. Output nothing but the JSON object.`;
 }
 
+// Shapes as they arrive from the model: everything optional, nothing trusted.
 interface AiNode {
-  id: string;
-  label: string;
-  shape: string;
-  colorIndex: number;
-  x: number;
-  y: number;
+  id?: string;
+  type?: string;
+  label?: string;
 }
 
 interface AiEdge {
-  id: string;
-  source: string;
-  target: string;
+  id?: string;
+  source?: string;
+  target?: string;
   label?: string;
 }
 
@@ -145,6 +134,57 @@ interface AiDesign {
   nodes?: AiNode[];
   edges?: AiEdge[];
   summary?: string;
+}
+
+/**
+ * Model output → semantic records. Forgiving by design: a single bad field must never
+ * cost the user a whole generation, so anything unusable is coerced or dropped rather
+ * than thrown. Exported for tests — no HTTP server or live model required.
+ */
+export function validateDesign(design: AiDesign): {
+  nodes: SemanticNode[];
+  edges: SemanticEdge[];
+} {
+  const seen = new Set<string>();
+  const nodes: SemanticNode[] = [];
+
+  for (const n of design.nodes ?? []) {
+    if (!n.id || seen.has(n.id)) continue; // missing or duplicate id
+    seen.add(n.id);
+    let type: NodeType;
+    if (isNodeType(n.type)) {
+      type = n.type;
+    } else {
+      console.warn(
+        `AI generate: unknown node type "${n.type}" on "${n.id}", coercing to service`,
+      );
+      type = "service";
+    }
+    nodes.push({
+      id: n.id,
+      type,
+      label: n.label?.trim() || NODE_TYPE_REGISTRY[type].defaultLabel,
+    });
+  }
+
+  const edges: SemanticEdge[] = [];
+  const seenEdges = new Set<string>();
+
+  for (const e of design.edges ?? []) {
+    if (!e.id || seenEdges.has(e.id)) continue;
+    if (!e.source || !e.target) continue;
+    // A dangling edge is not a valid graph, and React Flow would render it as a
+    // floating stub, so drop it here.
+    if (!seen.has(e.source) || !seen.has(e.target)) continue;
+    seenEdges.add(e.id);
+    edges.push(
+      e.label
+        ? { id: e.id, source: e.source, target: e.target, label: e.label }
+        : { id: e.id, source: e.source, target: e.target },
+    );
+  }
+
+  return { nodes, edges };
 }
 
 // Robustly pull a JSON object out of a model response. Handles models that wrap
@@ -188,32 +228,15 @@ router.post("/generate", async (req, res) => {
     try {
       design = extractJson(raw);
     } catch (parseErr) {
-      console.error("AI generate: failed to parse JSON. Raw model output:\n", raw);
+      console.error(
+        "AI generate: failed to parse JSON. Raw model output:\n",
+        raw,
+      );
       throw parseErr;
     }
 
-    const nodes = (design.nodes ?? []).map((n) => {
-      const ci = Math.min(Math.max(Math.round(n.colorIndex ?? 0), 0), NODE_COLORS.length - 1);
-      const color = NODE_COLORS[ci];
-      const size = SHAPE_DEFAULTS[n.shape as NodeShape] ?? SHAPE_DEFAULTS.rectangle;
-      return {
-        id: n.id,
-        type: "canvasNode" as const,
-        position: { x: n.x, y: n.y },
-        data: { label: n.label, color: color.fill, textColor: color.text, shape: n.shape },
-        width: size.width,
-        height: size.height,
-      };
-    });
-
-    const edges = (design.edges ?? []).map((e) => ({
-      id: e.id,
-      type: "canvasEdge" as const,
-      source: e.source,
-      target: e.target,
-      data: { label: e.label ?? "" },
-      markerEnd: { type: "arrowclosed", color: "rgba(255,255,255,0.4)", width: 16, height: 16 },
-    }));
+    // Semantic records only — the client derives shape, colour, size and position.
+    const { nodes, edges } = validateDesign(design);
 
     const summary = design.summary ?? "Design applied to canvas.";
 
