@@ -5,8 +5,10 @@ import { NODE_COLORS, SHAPE_DEFAULTS, type NodeShape } from "@archforge/shared";
 const router = Router();
 
 // Provider switch via AI_PROVIDER:
-//   "azure"  -> Azure OpenAI (endpoint + deployment + api-version)
-//   anything else / unset -> generic OpenAI-compatible (NVIDIA, OpenAI, local Ollama…)
+//   "azure"   -> Azure OpenAI (AZURE_OPENAI_*)
+//   "nvidia"  -> NVIDIA NIM (NVIDIA_AI_*)
+//   "groq"    -> Groq (GROQ_AI_*)
+//   "openai"  -> generic OpenAI-compatible (AI_*, no defaults)
 const PROVIDER = (process.env.AI_PROVIDER ?? "openai").toLowerCase();
 
 function makeClient(): OpenAI {
@@ -18,19 +20,45 @@ function makeClient(): OpenAI {
       apiVersion: process.env.AZURE_OPENAI_API_VERSION ?? "2024-10-21",
     });
   }
-  return new OpenAI({
-    apiKey: process.env.AI_API_KEY,
-    baseURL: process.env.AI_BASE_URL ?? "https://integrate.api.nvidia.com/v1",
-  });
+  // nvidia, groq, openai: all use OpenAI-compatible client
+  let apiKey: string | undefined;
+  let baseURL: string | undefined;
+
+  if (PROVIDER === "nvidia") {
+    apiKey = process.env.NVIDIA_AI_API_KEY;
+    baseURL =
+      process.env.NVIDIA_AI_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
+  } else if (PROVIDER === "groq") {
+    apiKey = process.env.GROQ_AI_API_KEY;
+    baseURL =
+      process.env.GROQ_AI_BASE_URL ?? "https://api.groq.com/openai/v1";
+  } else {
+    // openai: generic, no defaults
+    apiKey = process.env.AI_API_KEY;
+    baseURL = process.env.AI_BASE_URL;
+  }
+
+  return new OpenAI({ apiKey, baseURL });
 }
 
-const client = makeClient();
+// Built on first request, not at import time: a missing key should surface as a 500 on
+// /api/generate, not crash the process at boot — and it keeps this module importable
+// by tests that only exercise validation.
+let client: OpenAI | null = null;
+function getClient(): OpenAI {
+  if (!client) client = makeClient();
+  return client;
+}
 
 // For Azure the "model" sent on each request is the deployment name.
 const MODEL =
   PROVIDER === "azure"
     ? process.env.AZURE_OPENAI_DEPLOYMENT ?? ""
-    : process.env.AI_MODEL ?? "meta/llama-3.3-70b-instruct";
+    : PROVIDER === "nvidia"
+      ? process.env.NVIDIA_AI_MODEL ?? "meta/llama-3.3-70b-instruct"
+      : PROVIDER === "groq"
+        ? process.env.GROQ_AI_MODEL ?? "llama-3.3-70b-versatile"
+        : process.env.AI_MODEL ?? "";
 
 const COLOR_NAMES = ["neutral", "blue", "purple", "orange", "red", "pink", "green", "teal"];
 
@@ -142,7 +170,7 @@ router.post("/generate", async (req, res) => {
       return;
     }
 
-    const completion = await client.chat.completions.create({
+    const completion = await getClient().chat.completions.create({
       model: MODEL,
       temperature: 0.6,
       // Generous budget: reasoning-style models spend tokens on a think phase

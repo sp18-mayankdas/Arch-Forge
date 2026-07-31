@@ -69,15 +69,20 @@ archforge/
 - `serializeGraph()` picks fields explicitly and never spreads its input — a spread would carry
   presentation keys into a prompt the moment a caller passed a React Flow node.
 
+### Transport and AI
+
 - **Frontend connects directly to the backend — there is no Vite proxy.** URLs come from
   `apps/frontend/src/lib/config.ts` (`API_URL`/`WS_URL`), which read `VITE_API_URL`/`VITE_WS_URL` and
   default to `http://localhost:3001` / `ws://localhost:3001`. Backend CORS is `origin: "*"`.
 - **AI generation** lives in `apps/backend/src/routes/ai.ts` (`POST /api/generate`) → returns
   `{ nodes, edges, summary }`. It uses the **`openai` SDK** with a provider switch (`AI_PROVIDER`):
-  `azure` → `AzureOpenAI` (endpoint + deployment + api-version); otherwise a generic OpenAI-compatible
-  client (`AI_BASE_URL`/`AI_MODEL`/`AI_API_KEY` — NVIDIA, OpenAI, local Ollama, …). Either way the model
-  is prompted to return a single JSON object, parsed robustly (`extractJson`) and mapped through
+  `azure` → `AzureOpenAI` (AZURE_OPENAI_* vars); `nvidia` → OpenAI-compatible with NVIDIA NIM defaults
+  (NVIDIA_AI_* vars); `groq` → Groq free tier (GROQ_AI_* vars); `openai` → generic OpenAI-compatible
+  (any other provider: OpenRouter, real OpenAI, local Ollama, …; AI_* vars). Either way the model is
+  prompted to return a single JSON object, parsed robustly (`extractJson`) and mapped through
   `NODE_COLORS`/`SHAPE_DEFAULTS`. Switch providers by editing `.env` only — no code changes.
+- The client is built **lazily** via `getClient()`, not at import time: a missing key surfaces as a 500
+  on `/api/generate` instead of crashing at boot, and it keeps the module importable by tests.
 - **Multiplayer** uses Yjs + y-websocket. The backend serves both HTTP and the Yjs WebSocket on port 3001.
   Room is the `?room=<id>` URL param — sharing the URL shares the room.
 
@@ -91,7 +96,9 @@ archforge/
 
 - **Backend needs `apps/backend/.env`** — set `AI_PROVIDER` then the matching block:
   - `azure`: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_VERSION`.
-  - `openai`: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` (e.g. NVIDIA free models).
+  - `nvidia`: `NVIDIA_AI_API_KEY` (required); `NVIDIA_AI_BASE_URL` and `NVIDIA_AI_MODEL` auto-default, override if needed.
+  - `groq`: `GROQ_AI_API_KEY` (required); `GROQ_AI_BASE_URL` and `GROQ_AI_MODEL` auto-default, override if needed.
+  - `openai`: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` (all required; no defaults).
   Plus optional `PORT` (default 3001). See `apps/backend/.env.example`. Restart the backend after editing
   `.env` (dotenv reads once at startup).
 - **Frontend needs no env for local dev** — defaults are baked in. Set `apps/frontend/.env`
