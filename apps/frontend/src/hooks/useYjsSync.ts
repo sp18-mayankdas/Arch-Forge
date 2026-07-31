@@ -1,59 +1,102 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { applyNodeChanges, applyEdgeChanges } from "@xyflow/react";
+import { applyNodeChanges, applyEdgeChanges, MarkerType } from "@xyflow/react";
 import type { NodeChange, EdgeChange } from "@xyflow/react";
 import * as Y from "yjs";
+import {
+  NODE_TYPE_REGISTRY,
+  SHAPE_DEFAULTS,
+  type NodeType,
+  type SemanticNode,
+  type SemanticEdge,
+} from "@archforge/shared";
 import type { CanvasNode, CanvasEdge, UserAwareness } from "@/types/canvas";
+import { getMaps, applyOps, setPositions } from "@/lib/semantic-ops";
 
 interface UseYjsSyncProps {
-  nodesMap: Y.Map<Y.Map<unknown>>;
-  edgesMap: Y.Map<Y.Map<unknown>>;
+  doc: Y.Doc;
   awareness: import("y-protocols/awareness").Awareness;
 }
 
-export function useYjsSync({ nodesMap, edgesMap, awareness }: UseYjsSyncProps) {
+// Identical for every edge, so it is derived here rather than stored per-edge in the
+// document — it is presentation, and the semantic layer does not carry presentation.
+const EDGE_MARKER = {
+  type: MarkerType.ArrowClosed,
+  color: "rgba(255,255,255,0.4)",
+  width: 16,
+  height: 16,
+} as const;
+
+export function useYjsSync({ doc, awareness }: UseYjsSyncProps) {
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   const [collaborators, setCollaborators] = useState<UserAwareness[]>([]);
 
   const isRemoteChange = useRef(false);
 
-  const yjsNodesToArray = useCallback(() => {
-    return Array.from(nodesMap.values()).map((n) => {
-      const raw = n instanceof Y.Map ? Object.fromEntries(n.entries()) : n;
-      return raw as unknown as CanvasNode;
+  // React Flow nodes are assembled from three sources: the semantic `nodes` map,
+  // the presentation `positions` map, and the type registry. None of the three
+  // knows about the others.
+  const buildNodes = useCallback((): CanvasNode[] => {
+    const { nodesMap, positionsMap } = getMaps(doc);
+    return Array.from(nodesMap.values()).map((m) => {
+      const id = m.get("id") as string;
+      const type = m.get("type") as NodeType;
+      const spec = NODE_TYPE_REGISTRY[type] ?? NODE_TYPE_REGISTRY.service;
+      const size = SHAPE_DEFAULTS[spec.shape];
+      return {
+        id,
+        type: "canvasNode",
+        // A node with no position entry renders at the origin rather than
+        // disappearing — missing presentation must never hide semantics.
+        position: positionsMap.get(id) ?? { x: 0, y: 0 },
+        data: { label: (m.get("label") as string) ?? spec.defaultLabel, type },
+        width: size.width,
+        height: size.height,
+      } as CanvasNode;
     });
-  }, [nodesMap]);
+  }, [doc]);
 
-  const yjsEdgesToArray = useCallback(() => {
-    return Array.from(edgesMap.values()).map((e) => {
-      const raw = e instanceof Y.Map ? Object.fromEntries(e.entries()) : e;
-      return raw as unknown as CanvasEdge;
-    });
-  }, [edgesMap]);
+  const buildEdges = useCallback((): CanvasEdge[] => {
+    const { edgesMap } = getMaps(doc);
+    return Array.from(edgesMap.values()).map((m) => ({
+      id: m.get("id") as string,
+      type: "canvasEdge",
+      source: m.get("source") as string,
+      target: m.get("target") as string,
+      data: { label: (m.get("label") as string) ?? "" },
+      markerEnd: EDGE_MARKER,
+    })) as CanvasEdge[];
+  }, [doc]);
 
   useEffect(() => {
-    const handleNodesChange = () => {
+    const { nodesMap, edgesMap, positionsMap } = getMaps(doc);
+
+    const refreshNodes = () => {
       isRemoteChange.current = true;
-      setNodes(yjsNodesToArray());
+      setNodes(buildNodes());
       isRemoteChange.current = false;
     };
-    const handleEdgesChange = () => {
+    const refreshEdges = () => {
       isRemoteChange.current = true;
-      setEdges(yjsEdgesToArray());
+      setEdges(buildEdges());
       isRemoteChange.current = false;
     };
 
-    nodesMap.observe(handleNodesChange);
-    edgesMap.observe(handleEdgesChange);
+    nodesMap.observe(refreshNodes);
+    // Positions live in their own map, so a remote drag has to be observed
+    // separately from a remote semantic change.
+    positionsMap.observe(refreshNodes);
+    edgesMap.observe(refreshEdges);
 
-    setNodes(yjsNodesToArray());
-    setEdges(yjsEdgesToArray());
+    setNodes(buildNodes());
+    setEdges(buildEdges());
 
     return () => {
-      nodesMap.unobserve(handleNodesChange);
-      edgesMap.unobserve(handleEdgesChange);
+      nodesMap.unobserve(refreshNodes);
+      positionsMap.unobserve(refreshNodes);
+      edgesMap.unobserve(refreshEdges);
     };
-  }, [nodesMap, edgesMap, yjsNodesToArray, yjsEdgesToArray]);
+  }, [doc, buildNodes, buildEdges]);
 
   useEffect(() => {
     const handleAwareness = () => {
@@ -83,18 +126,16 @@ export function useYjsSync({ nodesMap, edgesMap, awareness }: UseYjsSyncProps) {
         const updated = applyNodeChanges(changes, nds);
         for (const change of changes) {
           if (change.type === "remove") {
-            nodesMap.delete(change.id);
+            applyOps(doc, [{ op: "remove_node", id: change.id }]);
           } else if (change.type === "position" && change.position) {
-            const existing = nodesMap.get(change.id);
-            if (existing instanceof Y.Map) {
-              existing.set("position", change.position);
-            }
+            // Presentation write: appends no op, so a drag cannot bump the version.
+            setPositions(doc, { [change.id]: change.position });
           }
         }
         return updated;
       });
     },
-    [nodesMap]
+    [doc]
   );
 
   const onEdgesChange = useCallback(
@@ -104,56 +145,50 @@ export function useYjsSync({ nodesMap, edgesMap, awareness }: UseYjsSyncProps) {
         const updated = applyEdgeChanges(changes, eds);
         for (const change of changes) {
           if (change.type === "remove") {
-            edgesMap.delete(change.id);
+            applyOps(doc, [{ op: "remove_edge", id: change.id }]);
           }
         }
         return updated;
       });
     },
-    [edgesMap]
+    [doc]
   );
 
+  // Semantic-only entry points. Callers cannot smuggle in presentation fields
+  // because the parameter types have nowhere to put them.
   const addNodes = useCallback(
-    (newNodes: CanvasNode[]) => {
-      for (const node of newNodes) {
-        const yNode = new Y.Map<unknown>();
-        yNode.set("id", node.id);
-        yNode.set("type", node.type ?? "canvasNode");
-        yNode.set("position", node.position);
-        yNode.set("data", node.data);
-        yNode.set("width", node.width ?? 160);
-        yNode.set("height", node.height ?? 80);
-        nodesMap.set(node.id, yNode);
-      }
+    (newNodes: SemanticNode[]) => {
+      applyOps(
+        doc,
+        newNodes.map((n) => ({ op: "add_node" as const, id: n.id, type: n.type, label: n.label }))
+      );
     },
-    [nodesMap]
+    [doc]
   );
 
   const addEdges = useCallback(
-    (newEdges: CanvasEdge[]) => {
-      for (const edge of newEdges) {
-        const yEdge = new Y.Map<unknown>();
-        yEdge.set("id", edge.id);
-        yEdge.set("type", edge.type ?? "canvasEdge");
-        yEdge.set("source", edge.source);
-        yEdge.set("target", edge.target);
-        yEdge.set("data", edge.data ?? {});
-        yEdge.set("markerEnd", edge.markerEnd ?? {
-          type: "arrowclosed",
-          color: "rgba(255,255,255,0.4)",
-          width: 16,
-          height: 16,
-        });
-        edgesMap.set(edge.id, yEdge);
-      }
+    (newEdges: SemanticEdge[]) => {
+      applyOps(
+        doc,
+        newEdges.map((e) => ({
+          op: "add_edge" as const,
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.label,
+        }))
+      );
     },
-    [edgesMap]
+    [doc]
   );
 
   const clearCanvas = useCallback(() => {
-    nodesMap.clear();
-    edgesMap.clear();
-  }, [nodesMap, edgesMap]);
+    const { nodesMap } = getMaps(doc);
+    applyOps(
+      doc,
+      Array.from(nodesMap.keys()).map((id) => ({ op: "remove_node" as const, id }))
+    );
+  }, [doc]);
 
   return {
     nodes,

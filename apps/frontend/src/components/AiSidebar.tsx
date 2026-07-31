@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, KeyboardEvent } from "react";
 import { Bot, Send, Loader2, X, Sparkles, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { API_URL } from "@/lib/config";
-import type { CanvasNode, CanvasEdge } from "@/types/canvas";
+import type { SemanticNode, SemanticEdge } from "@/types/canvas";
 
 const STARTER_CHIPS = [
   "Design an e-commerce backend",
@@ -20,7 +20,7 @@ interface Message {
 interface AiSidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  onApplyDesign: (nodes: CanvasNode[], edges: CanvasEdge[]) => void;
+  onApplyDesign: (nodes: SemanticNode[], edges: SemanticEdge[]) => void;
 }
 
 export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
@@ -72,8 +72,8 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
       if (!res.ok) throw new Error("Generation failed");
 
       const data = (await res.json()) as {
-        nodes: CanvasNode[];
-        edges: CanvasEdge[];
+        nodes: SemanticNode[];
+        edges: SemanticEdge[];
         summary: string;
       };
 
