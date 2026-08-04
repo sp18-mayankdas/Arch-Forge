@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { WS_URL } from "./config";
+import type { ChatMessage } from "@/types/canvas";
 
 const USER_COLORS = [
   "#52A8FF", "#BF7AF0", "#FF990A", "#FF6166",
@@ -37,6 +38,7 @@ export interface Room {
   provider: WebsocketProvider;
   nodesMap: Y.Map<Y.Map<unknown>>;
   edgesMap: Y.Map<Y.Map<unknown>>;
+  messagesArray: Y.Array<ChatMessage>;
   user: ReturnType<typeof getUserInfo>;
 }
 
@@ -56,12 +58,13 @@ export function createRoom(roomId: string): Room {
 
   const nodesMap = doc.getMap<Y.Map<unknown>>("nodes");
   const edgesMap = doc.getMap<Y.Map<unknown>>("edges");
+  const messagesArray = doc.getArray<ChatMessage>("messages");
 
   const user = getUserInfo();
   provider.awareness.setLocalStateField("user", user);
   provider.awareness.setLocalStateField("cursor", null);
 
-  const room: Room = { doc, provider, nodesMap, edgesMap, user };
+  const room: Room = { doc, provider, nodesMap, edgesMap, messagesArray, user };
   roomCache.set(roomId, room);
   return room;
 }

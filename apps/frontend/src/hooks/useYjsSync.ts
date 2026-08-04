@@ -2,17 +2,19 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { applyNodeChanges, applyEdgeChanges } from "@xyflow/react";
 import type { NodeChange, EdgeChange } from "@xyflow/react";
 import * as Y from "yjs";
-import type { CanvasNode, CanvasEdge, UserAwareness } from "@/types/canvas";
+import type { CanvasNode, CanvasEdge, UserAwareness, ChatMessage } from "@/types/canvas";
 
 interface UseYjsSyncProps {
   nodesMap: Y.Map<Y.Map<unknown>>;
   edgesMap: Y.Map<Y.Map<unknown>>;
+  messagesArray: Y.Array<ChatMessage>;
   awareness: import("y-protocols/awareness").Awareness;
 }
 
-export function useYjsSync({ nodesMap, edgesMap, awareness }: UseYjsSyncProps) {
+export function useYjsSync({ nodesMap, edgesMap, messagesArray, awareness }: UseYjsSyncProps) {
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [collaborators, setCollaborators] = useState<UserAwareness[]>([]);
 
   const isRemoteChange = useRef(false);
@@ -54,6 +56,20 @@ export function useYjsSync({ nodesMap, edgesMap, awareness }: UseYjsSyncProps) {
       edgesMap.unobserve(handleEdgesChange);
     };
   }, [nodesMap, edgesMap, yjsNodesToArray, yjsEdgesToArray]);
+
+  useEffect(() => {
+    const handleMessagesChange = () => setMessages(messagesArray.toArray());
+    messagesArray.observe(handleMessagesChange);
+    setMessages(messagesArray.toArray());
+    return () => messagesArray.unobserve(handleMessagesChange);
+  }, [messagesArray]);
+
+  const addMessage = useCallback(
+    (message: ChatMessage) => {
+      messagesArray.push([message]);
+    },
+    [messagesArray]
+  );
 
   useEffect(() => {
     const handleAwareness = () => {
@@ -158,11 +174,13 @@ export function useYjsSync({ nodesMap, edgesMap, awareness }: UseYjsSyncProps) {
   return {
     nodes,
     edges,
+    messages,
     collaborators,
     onNodesChange,
     onEdgesChange,
     addNodes,
     addEdges,
+    addMessage,
     clearCanvas,
   };
 }

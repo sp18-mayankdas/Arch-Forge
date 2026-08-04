@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, KeyboardEvent } from "react";
 import { Bot, Send, Loader2, X, Sparkles, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { API_URL } from "@/lib/config";
-import type { CanvasNode, CanvasEdge } from "@/types/canvas";
+import type { CanvasNode, CanvasEdge, ChatMessage } from "@/types/canvas";
 
 const STARTER_CHIPS = [
   "Design an e-commerce backend",
@@ -11,22 +11,25 @@ const STARTER_CHIPS = [
   "Design a microservices system",
 ];
 
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-}
-
 interface AiSidebarProps {
   isOpen: boolean;
   onClose: () => void;
   onApplyDesign: (nodes: CanvasNode[], edges: CanvasEdge[]) => void;
+  messages: ChatMessage[];
+  addMessage: (message: ChatMessage) => void;
+  synced: boolean;
 }
 
-export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
+export function AiSidebar({
+  isOpen,
+  onClose,
+  onApplyDesign,
+  messages,
+  addMessage,
+  synced,
+}: AiSidebarProps) {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -43,13 +46,13 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
     const text = input.trim();
     if (!text || isLoading) return;
 
-    const userMsg: Message = {
+    const userMsg: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
       content: text,
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    addMessage(userMsg);
     setInput("");
     setIsLoading(true);
 
@@ -79,28 +82,28 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
 
       onApplyDesign(data.nodes, data.edges);
 
-      const assistantMsg: Message = {
+      const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: data.summary,
       };
-      setMessages((prev) => [...prev, assistantMsg]);
+      addMessage(assistantMsg);
     } catch (err) {
       // Silently ignore user-initiated stops; only surface real failures.
       if (!(err instanceof DOMException && err.name === "AbortError")) {
-        const errMsg: Message = {
+        const errMsg: ChatMessage = {
           id: (Date.now() + 1).toString(),
           role: "assistant",
           content: "Failed to generate architecture. Please try again.",
         };
-        setMessages((prev) => [...prev, errMsg]);
+        addMessage(errMsg);
       }
     } finally {
       abortRef.current = null;
       setIsLoading(false);
       scrollToBottom();
     }
-  }, [input, isLoading, onApplyDesign, scrollToBottom]);
+  }, [input, isLoading, onApplyDesign, scrollToBottom, addMessage]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -160,7 +163,13 @@ export function AiSidebar({ isOpen, onClose, onApplyDesign }: AiSidebarProps) {
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3">
-        {messages.length === 0 ? (
+        {messages.length === 0 && !synced ? (
+          // Room history still syncing — show a loader, not the empty state, to
+          // avoid flashing the starter UI before existing chat loads on reload.
+          <div className="flex h-full items-center justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-white/25" />
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex flex-col items-center gap-5 py-8 text-center">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#6457f9]/15">
               <Sparkles className="h-6 w-6 text-[#a89dfc]" />

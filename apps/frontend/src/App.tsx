@@ -23,31 +23,46 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copied, setCopied] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [synced, setSynced] = useState(false);
   const roomId = useMemo(() => getRoomId(), []);
 
-  const { doc: _doc, provider, nodesMap, edgesMap, user } = useMemo(
+  const { doc: _doc, provider, nodesMap, edgesMap, messagesArray, user } = useMemo(
     () => createRoom(roomId),
     [roomId]
   );
 
-  const { nodes, edges, collaborators, onNodesChange, onEdgesChange, addNodes, addEdges } =
-    useYjsSync({
-      nodesMap,
-      edgesMap,
-      awareness: provider.awareness,
-    });
+  const {
+    nodes,
+    edges,
+    messages,
+    collaborators,
+    onNodesChange,
+    onEdgesChange,
+    addNodes,
+    addEdges,
+    addMessage,
+  } = useYjsSync({
+    nodesMap,
+    edgesMap,
+    messagesArray,
+    awareness: provider.awareness,
+  });
 
   useEffect(() => {
     setConnected(provider.wsconnected);
+    setSynced(provider.synced);
     const onStatus = ({ status }: { status: string }) => {
       setConnected(status === "connected");
     };
+    const onSync = (isSynced: boolean) => setSynced(isSynced);
     provider.on("status", onStatus);
+    provider.on("sync", onSync);
     // Note: the provider is a cached singleton (see createRoom) that lives for the
-    // page's lifetime, so we only detach the listener here — no disconnect, which
+    // page's lifetime, so we only detach the listeners here — no disconnect, which
     // would otherwise drop the connection during StrictMode's mount/unmount cycle.
     return () => {
       provider.off("status", onStatus);
+      provider.off("sync", onSync);
     };
   }, [provider]);
 
@@ -166,6 +181,9 @@ export default function App() {
           isOpen={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
           onApplyDesign={handleApplyDesign}
+          messages={messages}
+          addMessage={addMessage}
+          synced={synced}
         />
       </div>
     </div>

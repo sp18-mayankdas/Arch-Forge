@@ -16,3 +16,11 @@ export interface UserAwareness {
   color: string;
   cursor: { x: number; y: number } | null;
 }
+
+// AI chat messages, stored in the shared Yjs doc so they sync across the room
+// and survive reloads (see lib/yjs.ts + hooks/useYjsSync.ts).
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+}
