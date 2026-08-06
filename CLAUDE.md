@@ -112,8 +112,11 @@ shapes or sizes cross the AI boundary in either direction. This is structural, n
   `/yjs` URL. Set `VITE_API_URL`/`VITE_WS_URL` to bypass the proxy and target a separate backend host.
   Backend CORS is `origin: "*"`.
 - **AI generation** lives in `apps/backend/src/routes/ai.ts` (`POST /api/generate`) → returns
-  `{ thinking?, questions, nodes, edges, summary }` as **semantic records only**. It uses the
-  **`openai` SDK** with a provider
+  `GenerateResponse` (`packages/shared/src/clarify.ts`): `{ thinking?, applied, questions,
+  suggestions, nodes, edges, summary, tradeoff? }`, as **semantic records only**. Every branch of the
+  handler goes through one `send()` helper typed against that interface, so a branch that forgets a
+  newly added field is a compile error — there is no test asserting the body, and that typing is the
+  only guard. It uses the **`openai` SDK** with a provider
   switch (`AI_PROVIDER`): `azure` → `AzureOpenAI` (AZURE*OPENAI*_ vars); `nvidia` → OpenAI-compatible
   with NVIDIA NIM defaults (NVIDIA*AI*_ vars); `groq` → Groq free tier (GROQ*AI*_ vars); `openai` → generic
   OpenAI-compatible (any other provider: OpenRouter, real OpenAI, local Ollama, …; AI\__ vars). Switch
@@ -149,8 +152,25 @@ complicated, simplify it" made the diagram *bigger*, because the model designed 
   leaving disconnected boxes. `validateDesign` now also accepts either spelling as defence in depth.
 - The prompt must insist edges are re-stated too — they are deleted by omission exactly like nodes,
   and a model told only to think about nodes will silently return a graph with none.
-- A non-empty canvas suppresses the clarifying round: asking "what are you building?" about a diagram
-  already on screen is nonsense.
+
+### Delete-by-omission is load-bearing, and dangerous — the guards are not optional
+
+Because omitted nodes are deleted, **any turn that returns an empty design is a canvas wipe.** The
+canvas is shared live, there is no undo and no persistence, so these three guards are the difference
+between an edit tool and an incident:
+
+- **Only `action === "generate"` may reach `validateDesign`.** This was a real bug: a vetoed `ask`, an
+  `ask` whose questions failed validation, or a typo'd action all fell through to `validateDesign`,
+  which returns an empty design for an ask-shaped object, and shipped it as `applied: true` — removing
+  every node in the room. The old comment defended the fall-through as "better than a dead end", which
+  held only while the canvas was always empty. Anything that is not a generate now returns prose.
+- **An empty generate against a populated canvas returns `applied: false`.** A truncated response and
+  a deliberate "delete everything" are indistinguishable here, so the ambiguity resolves to the
+  non-destructive reading.
+- **`App.tsx` holds back a large removal for confirmation** (≥ 3 nodes *and* ≥ ⅓ of the canvas — both,
+  so it neither nags on a 3-node diagram nor stays silent on a 30-node one). `handleApplyDesign`
+  returns whether it actually wrote, so the "Canvas updated" pill cannot claim a change that is still
+  pending. This is what makes one-click suggestion chips acceptable on a shared document.
 
 ### Conversation (talking is a first-class response)
 
@@ -164,11 +184,41 @@ client whether to touch the canvas. An empty list is ambiguous: "remove everythi
 edit. `AiSidebar` shows the net change (`Canvas updated · 6 nodes (−5)`) so a removal is visible;
 silently shrinking someone's canvas is alarming, saying "−5" is not.
 
+A parse failure returns **200 with `applied: false`, never a 500**: the client turns a failed request
+into an assistant message, which then lives in the transcript and is resent on every later turn — a
+500 literally teaches the model to mirror its own failure.
+
+### Being a partner, not a vending machine
+
+Three things beyond answering, all in `buildSystemPrompt`:
+
+- **`suggestions`** — up to `MAX_SUGGESTIONS` `{ label, rationale }` chips; clicking one sends its
+  label verbatim as the next user turn (the same channel `ClarifyQuestions` uses, so the transcript
+  stays plain text). The prompt picks them from five distinct rows — FORK / DEPTH / STRESS / SCOPE /
+  CUT, never two from one row — because without a menu every suggestion comes from the same well of
+  generic infra advice. `validateSuggestions` then drops boilerplate by matching a regex list against
+  the **label**. It deliberately does **not** check that the label names an existing node: that was
+  tried and removed, because FORK and SCOPE suggestions are by definition about things *not* on the
+  canvas, and the check silently deleted "Restore the Reporting Service" and "Show the password reset
+  flow". Genericness is a property of the verb, not of whether the noun is already drawn.
+- **`tradeoff`** — its own field, not a clause inside `summary`. A required JSON field gets filled far
+  more reliably than a constraint on prose, it is independently renderable, and keeping it out of
+  `summary` keeps it out of the transcript, where a caveat would be resent every turn and start
+  reading as an established requirement.
+- **`CANVAS OBSERVATIONS`** (`apps/backend/src/lib/canvas-observations.ts`) — true facts computed from
+  the graph (a datastore with two or more writers, an `external_api` on the request path with no queue,
+  a queue with no worker, a node everything funnels through), using the `isDatastore`/`isIngress`
+  predicates the node registry declares for exactly this purpose. This is the single highest-leverage
+  piece: it turns "be insightful about this diagram" — which a mid-tier model answers with generic
+  advice — into "read this fact and phrase it", which it does well. It is why the trade-off comes out
+  as *"Payments Service calls Stripe inline, so a Stripe outage takes checkout down with it"* rather
+  than *"this design has trade-offs"*. It returns nothing for a clean graph; silence beats padding.
+
 ### Requirement gathering (the AI asks instead of guessing)
 
 A vague request ("create a login system") must produce a **question with pickable options**, not an
-invented diagram. Four things make that hold; all are load-bearing, and the first three are the ones
-a naive prompt gets wrong:
+invented diagram. Six things make that hold, all load-bearing. Each one was arrived at by watching a
+simpler version fail:
 
 - **`/api/generate` takes a conversation, not a prompt.** The body is `{ messages: AiChatTurn[] }` —
   the frontend owns the transcript (`AiSidebar`'s local `messages` state) and posts the whole thing
@@ -178,16 +228,32 @@ a naive prompt gets wrong:
 - **`thinking` is the FIRST field in the output JSON.** Generation is left-to-right, so a reasoning
   field emitted before `action` means the model actually reasons before committing to a decision.
   Moving or dropping it silently degrades the decision quality.
-- **An explicit `action: "ask" | "generate"`, decided in a `STEP 2` block above the generation rules.**
-  Returning empty `nodes`/`edges` as the only signal does NOT work — it is an implicit cue that loses
-  to the model's prior to be helpful. Vague criteria ("two or more details missing") get rationalised
-  away too; the prompt uses worked examples instead ("create a login system" → ask; "a URL shortener,
-  Postgres, ~1k rps" → generate).
-- **The one-round cap is enforced in code, not by the prompt.** The route counts user turns and only
-  passes `allowClarify` on the first; on later turns the ask option is **absent from the prompt
-  entirely** rather than discouraged. Asking the model to count its own turns is a job it can get
-  wrong on any call. A stray `"ask"` later, or an `"ask"` with no renderable question, falls through
-  to `validateDesign` — so the user can never be stranded question-looping with no diagram.
+- **An explicit `action`, decided in a `STEP 2` block above the generation rules.** Returning empty
+  `nodes`/`edges` as the only signal does NOT work — it is an implicit cue that loses to the model's
+  prior to be helpful.
+- **The decision must be a MECHANICAL test, not a judgement call.** Vague criteria ("two or more
+  details missing", "when genuinely torn") get reasoned away every time. The prompt uses the
+  **bare-category test**: does the message name any specific component, the data it holds, a scale
+  figure, or an explicit constraint? None of those four → ask. This was tuned the hard way — an
+  earlier draft leaned so far into anti-stalling ("generate is the DEFAULT", "never ask what you would
+  guess") that "create a login system" started generating again, reintroducing the original complaint.
+  Asking is for the opening move on an empty canvas; editing an existing diagram means generate,
+  default anything open, and name the guess in `tradeoff`.
+- **Never twice in a row, enforced in code.** `allowClarify = !readAskedLast(body)`. The signal cannot
+  be computed server-side — the transcript is role + content only — so the client tags the assistant
+  turn it rendered (`asked` on `AiChatTurn`, derived in `lib/ai-history.ts` from the questions actually
+  shown). **An absent tag is presumed `true`**, so a stale bundle fails toward *less* asking rather
+  than a question loop. `readConversation` rebuilds every turn from role + content, which is what stops
+  that bookkeeping reaching the provider — there is a test pinning it, because a refactor to a spread
+  would silently start sending it. Forgeability is a non-issue: the whole transcript is already
+  client-supplied, and the worst a forged value buys is one extra question. When asking is disallowed
+  the option is **absent from the prompt**, never merely discouraged.
+- **Worked examples are the output distribution, not illustrations.** The prompt's single login
+  example was being reproduced verbatim, options and all, whenever a login system was requested. It is
+  now an unrelated domain (a warehouse stock tracker) explicitly labelled as showing *shape* rather
+  than content, with a self-check line forbidding reuse of the prompt's own wording. After that change
+  the model wrote its own questions per domain — asking a hospital system about patients-vs-staff and
+  insurance integration. If parroting reappears, rotate the example.
 
 `validateQuestions()` mirrors `validateDesign`'s forgiving contract: clamps to `MAX_QUESTIONS`/
 `MAX_OPTIONS`, drops duplicate option labels (two identical buttons are unpickable) and drops any
@@ -232,7 +298,13 @@ an ordinary user turn, so the transcript stays readable and the model needs no s
   so a normal restart no longer resets live sockets.
 - **`packages/shared/tsconfig.json` sets `target`/`lib` to `ES2020`** to match both apps. `tsconfig.base.json`
   sets neither, so without it tsc defaults to ES5 and rejects `Number.isFinite`, `Array.includes` and friends.
-- **Backend `build` caveat:** `pnpm --filter @archforge/backend build` (plain `tsc`) is imperfect because
-  `@archforge/shared` is consumed as raw TS from outside `src`. The verified run paths are `pnpm dev`
-  and `type-check`. If a compiled backend `dist/` is ever needed, bundle with `tsup`/`esbuild` (inlining
-  shared) rather than adding a compile step to the shared package.
+- **Backend `build` emits nothing — it is a type-check.** `apps/backend/tsconfig.json` sets `noEmit`
+  and has no `outDir`, so `pnpm --filter @archforge/backend build` runs `tsc` purely for diagnostics
+  and `turbo.json` overrides that task's `outputs` to `[]`. This is deliberate: `@archforge/shared` is
+  consumed as raw TS from outside `src`, so any emit widens tsc's inferred root dir to the repo root
+  and writes `dist/apps/backend/src/index.js` + `dist/packages/shared/src/*` — a layout `start`'s
+  `node dist/index.js` cannot load, and one whose `require("@archforge/shared")` has no runtime
+  resolver. Under emit the IDE also reports `TS6059 … not under 'rootDir'` on every shared import.
+  Do not re-add `outDir`. If a compiled backend `dist/` is ever needed, bundle with `tsup`/`esbuild`
+  (inlining shared) rather than adding a compile step to the shared package. The `start` script stays
+  broken until that bundler exists; `pnpm dev` is the only run path.

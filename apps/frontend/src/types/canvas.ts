@@ -18,6 +18,13 @@ export type {
   SemanticNode,
   SemanticEdge,
   SemanticOp,
+  SerializedGraph,
+  ClarifyQuestion,
+  ClarifyOption,
+  AiChatTurn,
+  Suggestion,
+  GenerateRequest,
+  GenerateResponse,
 } from "@archforge/shared";
 
 // These stay local — they depend on @xyflow/react.
