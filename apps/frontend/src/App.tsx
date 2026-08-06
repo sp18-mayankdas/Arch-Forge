@@ -1,12 +1,27 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Bot, Users, Copy, Check, Wifi, WifiOff } from "lucide-react";
+import { Bot, Users, Copy, Check, Wifi, WifiOff, TriangleAlert } from "lucide-react";
 import { GhostCanvas } from "@/components/canvas/GhostCanvas";
 import { AiSidebar } from "@/components/AiSidebar";
 import { useYjsSync } from "@/hooks/useYjsSync";
 import { createRoom } from "@/lib/yjs";
-import type { CanvasNode, CanvasEdge } from "@/types/canvas";
+import { applyOps, setPositions, readSemanticGraph, diffToOps } from "@/lib/semantic-ops";
+import { layoutGraph } from "@/lib/layout";
+import { serializeGraph } from "@/types/canvas";
+import type { SemanticNode, SemanticEdge } from "@/types/canvas";
 import { cn } from "@/lib/utils";
+
+// A removal this large is either a deliberate simplify or the model losing track of the
+// graph, and the two look identical from here — so ask. Both thresholds must hold: the ratio
+// alone would nag on a 3-node canvas, the count alone would nag on a 30-node one.
+const REMOVAL_CONFIRM_RATIO = 1 / 3;
+const MIN_REMOVALS_TO_CONFIRM = 3;
+
+interface PendingApply {
+  desired: { nodes: SemanticNode[]; edges: SemanticEdge[] };
+  removals: number;
+  before: number;
+}
 
 function getRoomId() {
   const params = new URLSearchParams(window.location.search);
@@ -24,12 +39,10 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
+  const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
   const roomId = useMemo(() => getRoomId(), []);
 
-  const { doc: _doc, provider, nodesMap, edgesMap, messagesArray, user } = useMemo(
-    () => createRoom(roomId),
-    [roomId]
-  );
+  const { doc, provider, messagesArray, user } = useMemo(() => createRoom(roomId), [roomId]);
 
   const {
     nodes,
@@ -38,12 +51,10 @@ export default function App() {
     collaborators,
     onNodesChange,
     onEdgesChange,
-    addNodes,
     addEdges,
     addMessage,
   } = useYjsSync({
-    nodesMap,
-    edgesMap,
+    doc,
     messagesArray,
     awareness: provider.awareness,
   });
@@ -66,12 +77,63 @@ export default function App() {
     };
   }, [provider]);
 
-  const handleApplyDesign = useCallback(
-    (newNodes: CanvasNode[], newEdges: CanvasEdge[]) => {
-      addNodes(newNodes);
-      addEdges(newEdges);
+  /** The canvas as the AI is allowed to see it: topology only, no coordinates. */
+  const readGraphForAi = useCallback(() => {
+    const { nodes: n, edges: e, version } = readSemanticGraph(doc);
+    return serializeGraph(n, e, version);
+  }, [doc]);
+
+  /** Writes the desired graph. Diffed against the doc at call time, never against a
+   * snapshot, so a confirmed-later apply still lands on the current canvas. */
+  const writeDesign = useCallback(
+    (desired: { nodes: SemanticNode[]; edges: SemanticEdge[] }) => {
+      // The AI returns the complete desired graph, so this is a diff, not an append.
+      // Appending was why "make it simpler" made the diagram bigger: an add-only apply
+      // can only ever grow the graph.
+      const ops = diffToOps(readSemanticGraph(doc), desired);
+      if (ops.length === 0) return false;
+
+      // 1. Semantic write, one transaction, ops appended.
+      applyOps(doc, ops);
+      // 2. Lay out the FULL graph, not just what changed, so surviving content re-flows
+      //    to fill the space instead of leaving holes. applyOps is synchronous, so the
+      //    read below already sees the updated graph.
+      const { nodes: allNodes, edges: allEdges } = readSemanticGraph(doc);
+      // 3. Presentation write. Appends no op — layout is not a semantic change.
+      setPositions(doc, layoutGraph(allNodes, allEdges));
+      return true;
     },
-    [addNodes, addEdges]
+    [doc]
+  );
+
+  /**
+   * Applies a design, unless it would delete a large share of the canvas — then it waits for
+   * confirmation.
+   *
+   * The canvas is shared live and there is no undo, so a single turn that drops most of
+   * someone's work should not land silently. A deliberate "simplify this" costs one extra
+   * click; a model that quietly forgot half the graph gets caught. Returns whether the canvas
+   * actually changed, so the sidebar does not claim an update that is still pending.
+   */
+  const handleApplyDesign = useCallback(
+    (desiredNodes: SemanticNode[], desiredEdges: SemanticEdge[]) => {
+      const desired = { nodes: desiredNodes, edges: desiredEdges };
+      const current = readSemanticGraph(doc);
+      const removals = diffToOps(current, desired).filter(
+        (o) => o.op === "remove_node"
+      ).length;
+
+      const isLargeRemoval =
+        removals >= MIN_REMOVALS_TO_CONFIRM &&
+        removals >= current.nodes.length * REMOVAL_CONFIRM_RATIO;
+
+      if (isLargeRemoval) {
+        setPendingApply({ desired, removals, before: current.nodes.length });
+        return false;
+      }
+      return writeDesign(desired);
+    },
+    [doc, writeDesign]
   );
 
   const handleCopyLink = useCallback(async () => {
@@ -177,10 +239,35 @@ export default function App() {
           />
         </ReactFlowProvider>
 
+        {pendingApply && (
+          <div className="absolute left-1/2 top-4 z-50 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-amber-400/25 bg-[#1c1a14]/95 px-4 py-2.5 shadow-2xl backdrop-blur-xl">
+            <TriangleAlert className="h-4 w-4 shrink-0 text-amber-400" />
+            <span className="text-xs text-white/80">
+              This removes {pendingApply.removals} of {pendingApply.before} nodes.
+            </span>
+            <button
+              onClick={() => {
+                writeDesign(pendingApply.desired);
+                setPendingApply(null);
+              }}
+              className="flex h-7 items-center rounded-lg bg-amber-400/90 px-3 text-xs font-medium text-[#1c1a14] transition-opacity hover:opacity-90"
+            >
+              Apply
+            </button>
+            <button
+              onClick={() => setPendingApply(null)}
+              className="flex h-7 items-center rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white/60 transition-colors hover:bg-white/8 hover:text-white"
+            >
+              Discard
+            </button>
+          </div>
+        )}
+
         <AiSidebar
           isOpen={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
           onApplyDesign={handleApplyDesign}
+          readGraphForAi={readGraphForAi}
           messages={messages}
           addMessage={addMessage}
           synced={synced}

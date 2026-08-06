@@ -5,7 +5,10 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "lib": ["ES2020"],
-    "outDir": "./dist",
+    // Type-check only. @archforge/shared is consumed as raw TS from outside src, so any
+    // emit forces the root dir out to the repo root and writes dist/apps/backend/src/*.
+    // A real dist must come from a bundler that inlines shared, not from tsc.
+    "noEmit": true,
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {

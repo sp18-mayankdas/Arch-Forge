@@ -1,10 +1,8 @@
 import { Handle, Position, NodeResizer } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import type { CanvasNode, NodeShape } from "@/types/canvas";
-import { NODE_COLORS } from "@/types/canvas";
+import type { CanvasNode, NodeShape, NodeType } from "@/types/canvas";
+import { NODE_COLORS, NODE_TYPE_REGISTRY } from "@/types/canvas";
 
-const DEFAULT_FILL = NODE_COLORS[0].fill;
-const DEFAULT_TEXT = NODE_COLORS[0].text;
 const BORDER_REST = "rgba(255,255,255,0.1)";
 const BORDER_SELECTED = "rgba(255,255,255,0.4)";
 const RESIZER_COLOR = "rgba(255,255,255,0.3)";
@@ -65,9 +63,13 @@ function borderRadius(shape: NodeShape): string {
 }
 
 export function CanvasNodeComponent({ id, data, selected }: NodeProps<CanvasNode>) {
-  const fill = (data.color as string) ?? DEFAULT_FILL;
-  const textColor = (data.textColor as string) ?? DEFAULT_TEXT;
-  const shape = (data.shape as NodeShape) ?? "rectangle";
+  // Shape and colour are derived from the node's semantic type, never stored on the
+  // node. The registry is the single source of rendering truth.
+  const spec = NODE_TYPE_REGISTRY[data.type as NodeType] ?? NODE_TYPE_REGISTRY.service;
+  const palette = NODE_COLORS[spec.colorIndex];
+  const fill = palette.fill;
+  const textColor = palette.text;
+  const shape: NodeShape = spec.shape;
   const stroke = selected ? BORDER_SELECTED : BORDER_REST;
   const isSvg = shape === "diamond" || shape === "hexagon" || shape === "cylinder";
 
@@ -76,7 +78,7 @@ export function CanvasNodeComponent({ id, data, selected }: NodeProps<CanvasNode
       className={isSvg ? "relative z-10 truncate px-3 text-center" : "truncate px-3 text-center"}
       style={{ color: textColor, fontSize: 13, fontWeight: 500 }}
     >
-      {data.label || <span style={{ opacity: 0.35 }}>Label</span>}
+      {data.label || <span style={{ opacity: 0.35 }}>{spec.defaultLabel}</span>}
     </span>
   );
 
