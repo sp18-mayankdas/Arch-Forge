@@ -91,6 +91,76 @@ export function setPositions(doc: Y.Doc, positions: Record<string, Position>): v
   });
 }
 
+/**
+ * Current graph + the complete desired graph → the ops that turn one into the other.
+ *
+ * The AI returns the FULL state it wants rather than a patch, because asking a model to
+ * emit correct ops against ids it cannot see is far more error-prone than asking it to
+ * describe the end state. Turning that into a minimal op list is deterministic work, so
+ * it belongs here in code.
+ *
+ * This is also what makes "make it simpler" possible at all: an add-only apply can only
+ * ever grow the graph, so a request to remove something produced the opposite.
+ */
+export function diffToOps(
+  current: { nodes: SemanticNode[]; edges: SemanticEdge[] },
+  desired: { nodes: SemanticNode[]; edges: SemanticEdge[] }
+): SemanticOp[] {
+  const ops: SemanticOp[] = [];
+
+  const currentNodes = new Map(current.nodes.map((n) => [n.id, n]));
+  const desiredNodes = new Map(desired.nodes.map((n) => [n.id, n]));
+  const currentEdges = new Map(current.edges.map((e) => [e.id, e]));
+  const desiredEdges = new Map(desired.edges.map((e) => [e.id, e]));
+
+  // Removals first: removing a node sweeps its edges, so doing this before the adds
+  // keeps a re-added edge from being caught by that sweep.
+  for (const id of currentNodes.keys()) {
+    if (!desiredNodes.has(id)) ops.push({ op: "remove_node", id });
+  }
+  for (const [id, edge] of currentEdges) {
+    if (desiredEdges.has(id)) continue;
+    // A node removal already sweeps this edge; emitting it again would be a no-op that
+    // still inflates the version counter.
+    const sweptWithNode = !desiredNodes.has(edge.source) || !desiredNodes.has(edge.target);
+    if (!sweptWithNode) ops.push({ op: "remove_edge", id });
+  }
+
+  for (const [id, node] of desiredNodes) {
+    const existing = currentNodes.get(id);
+    if (!existing) {
+      ops.push({ op: "add_node", id, type: node.type, label: node.label });
+      continue;
+    }
+    // Same id, changed content: a targeted set beats remove+add, which would churn the
+    // node's position and make it jump on screen.
+    if (existing.label !== node.label) ops.push({ op: "set_label", id, label: node.label });
+    if (existing.type !== node.type) ops.push({ op: "set_type", id, type: node.type });
+  }
+
+  for (const [id, edge] of desiredEdges) {
+    const existing = currentEdges.get(id);
+    const changed =
+      existing &&
+      (existing.source !== edge.source ||
+        existing.target !== edge.target ||
+        (existing.label ?? "") !== (edge.label ?? ""));
+    // There is no set_* op for edges in the vocabulary, so a changed edge is replaced.
+    if (changed) ops.push({ op: "remove_edge", id });
+    if (!existing || changed) {
+      ops.push({
+        op: "add_edge",
+        id,
+        source: edge.source,
+        target: edge.target,
+        ...(edge.label ? { label: edge.label } : {}),
+      });
+    }
+  }
+
+  return ops;
+}
+
 export function readSemanticGraph(doc: Y.Doc): {
   nodes: SemanticNode[];
   edges: SemanticEdge[];
