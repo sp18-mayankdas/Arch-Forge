@@ -38,27 +38,42 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copied, setCopied] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [synced, setSynced] = useState(false);
   const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
   const roomId = useMemo(() => getRoomId(), []);
 
-  const { doc, provider, user } = useMemo(() => createRoom(roomId), [roomId]);
+  const { doc, provider, messagesArray, user } = useMemo(() => createRoom(roomId), [roomId]);
 
-  const { nodes, edges, collaborators, onNodesChange, onEdgesChange, addEdges } = useYjsSync({
+  const {
+    nodes,
+    edges,
+    messages,
+    collaborators,
+    onNodesChange,
+    onEdgesChange,
+    addEdges,
+    addMessage,
+  } = useYjsSync({
     doc,
+    messagesArray,
     awareness: provider.awareness,
   });
 
   useEffect(() => {
     setConnected(provider.wsconnected);
+    setSynced(provider.synced);
     const onStatus = ({ status }: { status: string }) => {
       setConnected(status === "connected");
     };
+    const onSync = (isSynced: boolean) => setSynced(isSynced);
     provider.on("status", onStatus);
+    provider.on("sync", onSync);
     // Note: the provider is a cached singleton (see createRoom) that lives for the
-    // page's lifetime, so we only detach the listener here — no disconnect, which
+    // page's lifetime, so we only detach the listeners here — no disconnect, which
     // would otherwise drop the connection during StrictMode's mount/unmount cycle.
     return () => {
       provider.off("status", onStatus);
+      provider.off("sync", onSync);
     };
   }, [provider]);
 
@@ -253,6 +268,9 @@ export default function App() {
           onClose={() => setSidebarOpen(false)}
           onApplyDesign={handleApplyDesign}
           readGraphForAi={readGraphForAi}
+          messages={messages}
+          addMessage={addMessage}
+          synced={synced}
         />
       </div>
     </div>

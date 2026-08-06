@@ -9,11 +9,14 @@ import {
   type SemanticNode,
   type SemanticEdge,
 } from "@archforge/shared";
-import type { CanvasNode, CanvasEdge, UserAwareness } from "@/types/canvas";
+import type { CanvasNode, CanvasEdge, UserAwareness, ChatMessage } from "@/types/canvas";
 import { getMaps, applyOps, setPositions } from "@/lib/semantic-ops";
 
 interface UseYjsSyncProps {
   doc: Y.Doc;
+  // The transcript sits outside the semantic/presentation split, so it is passed in
+  // rather than read from getMaps(doc).
+  messagesArray: Y.Array<ChatMessage>;
   awareness: import("y-protocols/awareness").Awareness;
 }
 
@@ -26,9 +29,10 @@ const EDGE_MARKER = {
   height: 16,
 } as const;
 
-export function useYjsSync({ doc, awareness }: UseYjsSyncProps) {
+export function useYjsSync({ doc, messagesArray, awareness }: UseYjsSyncProps) {
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [collaborators, setCollaborators] = useState<UserAwareness[]>([]);
 
   const isRemoteChange = useRef(false);
@@ -97,6 +101,20 @@ export function useYjsSync({ doc, awareness }: UseYjsSyncProps) {
       edgesMap.unobserve(refreshEdges);
     };
   }, [doc, buildNodes, buildEdges]);
+
+  useEffect(() => {
+    const handleMessagesChange = () => setMessages(messagesArray.toArray());
+    messagesArray.observe(handleMessagesChange);
+    setMessages(messagesArray.toArray());
+    return () => messagesArray.unobserve(handleMessagesChange);
+  }, [messagesArray]);
+
+  const addMessage = useCallback(
+    (message: ChatMessage) => {
+      messagesArray.push([message]);
+    },
+    [messagesArray]
+  );
 
   useEffect(() => {
     const handleAwareness = () => {
@@ -193,11 +211,13 @@ export function useYjsSync({ doc, awareness }: UseYjsSyncProps) {
   return {
     nodes,
     edges,
+    messages,
     collaborators,
     onNodesChange,
     onEdgesChange,
     addNodes,
     addEdges,
+    addMessage,
     clearCanvas,
   };
 }

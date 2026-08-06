@@ -6,6 +6,7 @@ import type {
   SemanticNode,
   SemanticEdge,
   SerializedGraph,
+  ChatMessage,
   ClarifyQuestion,
   Suggestion,
   GenerateRequest,
@@ -48,6 +49,14 @@ interface AiSidebarProps {
   /** Reads the live canvas as topology-only, so the AI can amend it rather than
    * redesigning blind — which is what made "simplify this" grow the diagram. */
   readGraphForAi: () => SerializedGraph;
+  /** The transcript lives in the Yjs doc, not in local state, so it is shared across the
+   * room and survives a reload. This component renders it and appends to it; it does not
+   * own it. Every field a turn renders is on ChatMessage for that reason. */
+  messages: ChatMessage[];
+  addMessage: (message: ChatMessage) => void;
+  /** False until the room's history has arrived, so a reload shows a loader instead of
+   * flashing the empty state over a transcript that is about to appear. */
+  synced: boolean;
 }
 
 export function AiSidebar({
@@ -55,10 +64,12 @@ export function AiSidebar({
   onClose,
   onApplyDesign,
   readGraphForAi,
+  messages,
+  addMessage,
+  synced,
 }: AiSidebarProps) {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -76,7 +87,7 @@ export function AiSidebar({
       const content = text.trim();
       if (!content || isLoading) return;
 
-      const userMsg: Message = {
+      const userMsg: ChatMessage = {
         // Timestamp alone collided as a React key when chips were clicked in quick succession.
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         role: "user",
@@ -88,7 +99,8 @@ export function AiSidebar({
       const history = toChatHistory([...messages, userMsg]);
       const nodeCountBefore = readGraphForAi().nodes.length;
 
-      setMessages((prev) => [...prev, userMsg]);
+      addMessage(userMsg);
+      // setMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
       scrollToBottom();
 
@@ -119,7 +131,7 @@ export function AiSidebar({
         // the server's intent.
         const changed = data.applied ? onApplyDesign(data.nodes, data.edges) : false;
 
-        const assistantMsg: Message = {
+        const assistantMsg: ChatMessage = {
           id: `${Date.now() + 1}-${Math.random().toString(36).slice(2, 7)}`,
           role: "assistant",
           content: data.summary,
@@ -136,16 +148,16 @@ export function AiSidebar({
             ? { total: data.nodes.length, delta: data.nodes.length - nodeCountBefore }
             : undefined,
         };
-        setMessages((prev) => [...prev, assistantMsg]);
+        addMessage(assistantMsg);
       } catch (err) {
         // Silently ignore user-initiated stops; only surface real failures.
         if (!(err instanceof DOMException && err.name === "AbortError")) {
-          const errMsg: Message = {
+          const errMsg: ChatMessage = {
             id: (Date.now() + 1).toString(),
             role: "assistant",
             content: "Failed to generate architecture. Please try again.",
           };
-          setMessages((prev) => [...prev, errMsg]);
+          addMessage(errMsg);
         }
       } finally {
         abortRef.current = null;
@@ -153,7 +165,7 @@ export function AiSidebar({
         scrollToBottom();
       }
     },
-    [messages, isLoading, onApplyDesign, readGraphForAi, scrollToBottom]
+    [messages, isLoading, onApplyDesign, readGraphForAi, scrollToBottom, addMessage]
   );
 
   const handleSend = useCallback(() => {
@@ -224,7 +236,13 @@ export function AiSidebar({
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3">
-        {messages.length === 0 ? (
+        {messages.length === 0 && !synced ? (
+          // Room history still syncing — show a loader, not the empty state, to
+          // avoid flashing the starter UI before existing chat loads on reload.
+          <div className="flex h-full items-center justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-white/25" />
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex flex-col items-center gap-5 py-8 text-center">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#6457f9]/15">
               <Sparkles className="h-6 w-6 text-[#a89dfc]" />

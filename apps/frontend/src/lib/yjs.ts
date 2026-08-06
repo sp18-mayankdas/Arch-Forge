@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { WS_URL } from "./config";
+import type { ChatMessage } from "@/types/canvas";
 import { getMaps } from "./semantic-ops";
 
 const USER_COLORS = [
@@ -36,6 +37,9 @@ export function getUserInfo() {
 export interface Room {
   doc: Y.Doc;
   provider: WebsocketProvider;
+  // nodes/edges/positions/ops are reached through getMaps(doc), not held here.
+  // The transcript is not part of that split, so it keeps its own handle.
+  messagesArray: Y.Array<ChatMessage>;
   user: ReturnType<typeof getUserInfo>;
 }
 
@@ -56,12 +60,13 @@ export function createRoom(roomId: string): Room {
   // Touch the shared types up front so they exist before the first sync message.
   // Consumers go through getMaps(doc) rather than holding references.
   getMaps(doc);
+  const messagesArray = doc.getArray<ChatMessage>("messages");
 
   const user = getUserInfo();
   provider.awareness.setLocalStateField("user", user);
   provider.awareness.setLocalStateField("cursor", null);
 
-  const room: Room = { doc, provider, user };
+  const room: Room = { doc, provider, messagesArray, user };
   roomCache.set(roomId, room);
   return room;
 }
