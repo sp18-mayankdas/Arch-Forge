@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@archforge/shared": "workspace:*",
@@ -29,6 +30,7 @@
     "eslint": "^10.7.0",
     "ts-node-dev": "^2.0.0",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
   }
 }
