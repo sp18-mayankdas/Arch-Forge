@@ -5,7 +5,9 @@ import { GhostCanvas } from "@/components/canvas/GhostCanvas";
 import { AiSidebar } from "@/components/AiSidebar";
 import { useYjsSync } from "@/hooks/useYjsSync";
 import { createRoom } from "@/lib/yjs";
-import type { CanvasNode, CanvasEdge } from "@/types/canvas";
+import { applyOps, setPositions, readSemanticGraph } from "@/lib/semantic-ops";
+import { layoutGraph } from "@/lib/layout";
+import type { SemanticNode, SemanticEdge } from "@/types/canvas";
 import { cn } from "@/lib/utils";
 
 function getRoomId() {
@@ -25,17 +27,12 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const roomId = useMemo(() => getRoomId(), []);
 
-  const { doc: _doc, provider, nodesMap, edgesMap, user } = useMemo(
-    () => createRoom(roomId),
-    [roomId]
-  );
+  const { doc, provider, user } = useMemo(() => createRoom(roomId), [roomId]);
 
-  const { nodes, edges, collaborators, onNodesChange, onEdgesChange, addNodes, addEdges } =
-    useYjsSync({
-      nodesMap,
-      edgesMap,
-      awareness: provider.awareness,
-    });
+  const { nodes, edges, collaborators, onNodesChange, onEdgesChange, addEdges } = useYjsSync({
+    doc,
+    awareness: provider.awareness,
+  });
 
   useEffect(() => {
     setConnected(provider.wsconnected);
@@ -52,11 +49,31 @@ export default function App() {
   }, [provider]);
 
   const handleApplyDesign = useCallback(
-    (newNodes: CanvasNode[], newEdges: CanvasEdge[]) => {
-      addNodes(newNodes);
-      addEdges(newEdges);
+    (newNodes: SemanticNode[], newEdges: SemanticEdge[]) => {
+      // 1. Semantic write, one transaction, ops appended.
+      applyOps(doc, [
+        ...newNodes.map((n) => ({
+          op: "add_node" as const,
+          id: n.id,
+          type: n.type,
+          label: n.label,
+        })),
+        ...newEdges.map((e) => ({
+          op: "add_edge" as const,
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.label,
+        })),
+      ]);
+      // 2. Lay out the FULL graph, not just the new nodes, so pre-existing content
+      //    re-flows instead of being overlapped by the new arrivals. applyOps is
+      //    synchronous, so the read below already sees the merged graph.
+      const { nodes: allNodes, edges: allEdges } = readSemanticGraph(doc);
+      // 3. Presentation write. Appends no op — layout is not a semantic change.
+      setPositions(doc, layoutGraph(allNodes, allEdges));
     },
-    [addNodes, addEdges]
+    [doc]
   );
 
   const handleCopyLink = useCallback(async () => {

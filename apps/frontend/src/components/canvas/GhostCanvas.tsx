@@ -5,13 +5,12 @@ import {
   BackgroundVariant,
   ConnectionMode,
   ConnectionLineType,
-  MarkerType,
   Controls,
   useReactFlow,
 } from "@xyflow/react";
 import type { Connection } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { CanvasNode, CanvasEdge } from "@/types/canvas";
+import type { CanvasNode, CanvasEdge, SemanticEdge } from "@/types/canvas";
 import type { UserAwareness } from "@/types/canvas";
 import { CanvasNodeComponent } from "./CanvasNode";
 import { CanvasEdgeComponent } from "./CanvasEdge";
@@ -33,7 +32,7 @@ interface GhostCanvasProps {
   awareness: Awareness;
   onNodesChange: ReturnType<typeof import("@/hooks/useYjsSync").useYjsSync>["onNodesChange"];
   onEdgesChange: ReturnType<typeof import("@/hooks/useYjsSync").useYjsSync>["onEdgesChange"];
-  addEdges: (edges: CanvasEdge[]) => void;
+  addEdges: (edges: SemanticEdge[]) => void;
 }
 
 export function GhostCanvas({
@@ -63,23 +62,9 @@ export function GhostCanvas({
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
-      addEdges([
-        {
-          id: newEdgeId(),
-          type: "canvasEdge",
-          source: connection.source,
-          target: connection.target,
-          sourceHandle: connection.sourceHandle ?? null,
-          targetHandle: connection.targetHandle ?? null,
-          data: { label: "" },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: "rgba(255,255,255,0.4)",
-            width: 16,
-            height: 16,
-          },
-        } as CanvasEdge,
-      ]);
+      // Semantic only. The handles, marker and empty label this used to pass were
+      // never persisted to Yjs anyway — the renderer derives them.
+      addEdges([{ id: newEdgeId(), source: connection.source, target: connection.target }]);
     },
     [addEdges]
   );
