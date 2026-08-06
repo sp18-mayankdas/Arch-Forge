@@ -7,6 +7,8 @@ import type {
   SemanticEdge,
   SerializedGraph,
   ChatMessage,
+  ClarifyQuestion,
+  Suggestion,
   GenerateRequest,
   GenerateResponse,
 } from "@/types/canvas";
@@ -21,6 +23,22 @@ const STARTER_CHIPS = [
   "Build a CI/CD pipeline",
   "Design a microservices system",
 ];
+
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  /** The model's reasoning for this turn; shown collapsed. */
+  thinking?: string;
+  /** Present only on a clarifying turn — rendered as pickable options. */
+  questions?: ClarifyQuestion[];
+  /** Proposed next moves; clicking one sends its label. */
+  suggestions?: Suggestion[];
+  /** The one thing this design costs. Present only on a generated design. */
+  tradeoff?: string;
+  /** Present only when the canvas actually changed. */
+  change?: { total: number; delta: number };
+}
 
 interface AiSidebarProps {
   isOpen: boolean;
@@ -82,6 +100,7 @@ export function AiSidebar({
       const nodeCountBefore = readGraphForAi().nodes.length;
 
       addMessage(userMsg);
+      // setMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
       scrollToBottom();
 
