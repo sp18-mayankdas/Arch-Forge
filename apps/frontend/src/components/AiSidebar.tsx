@@ -7,13 +7,12 @@ import type {
   SemanticEdge,
   SerializedGraph,
   ChatMessage,
-  ClarifyQuestion,
-  Suggestion,
   GenerateRequest,
   GenerateResponse,
 } from "@/types/canvas";
 import { toChatHistory } from "@/lib/ai-history";
-import { ClarifyQuestions } from "./ClarifyQuestions";
+import { ClarifyRecord } from "./ClarifyRecord";
+import { ClarifyStepper } from "./ClarifyStepper";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { Suggestions } from "./Suggestions";
 
@@ -24,24 +23,13 @@ const STARTER_CHIPS = [
   "Design a microservices system",
 ];
 
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  /** The model's reasoning for this turn; shown collapsed. */
-  thinking?: string;
-  /** Present only on a clarifying turn — rendered as pickable options. */
-  questions?: ClarifyQuestion[];
-  /** Proposed next moves; clicking one sends its label. */
-  suggestions?: Suggestion[];
-  /** The one thing this design costs. Present only on a generated design. */
-  tradeoff?: string;
-  /** Present only when the canvas actually changed. */
-  change?: { total: number; delta: number };
-}
-
 interface AiSidebarProps {
   isOpen: boolean;
+  /** Owned by App, because the arrow tab has to be positioned against the panel from outside
+   * it — the tab must stay visible once the panel is translated off-screen. */
+  width: number;
+  /** Pointer handlers from useSidebarWidth, spread onto the left-edge grab strip. */
+  resizeHandleProps: React.ComponentProps<"div">;
   onClose: () => void;
   /** Returns whether the canvas actually changed — a large removal waits for confirmation,
    * and the "Canvas updated" pill must not claim an update that has not happened. */
@@ -61,6 +49,8 @@ interface AiSidebarProps {
 
 export function AiSidebar({
   isOpen,
+  width,
+  resizeHandleProps,
   onClose,
   onApplyDesign,
   readGraphForAi,
@@ -73,6 +63,16 @@ export function AiSidebar({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Which round the viewer set aside via "Type my own answer instead". Local and keyed by
+  // message id: a peer's dismissal is not ours, and a new round must not inherit an old
+  // dismissal.
+  const [dismissedRound, setDismissedRound] = useState<string | null>(null);
+
+  // A round is live only as the LAST message. Once anything follows it — our answer, or a
+  // peer's — it becomes a record. Same rule that gates suggestion chips.
+  const last = messages[messages.length - 1];
+  const activeRound = last?.role === "assistant" && last.questions?.length ? last : null;
+  const stepperOpen = !!activeRound && dismissedRound !== activeRound.id;
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -206,11 +206,25 @@ export function AiSidebar({
 
   return (
     <aside
+      style={{ width }}
       className={cn(
-        "fixed inset-y-3 right-3 top-[60px] z-40 flex w-80 flex-col rounded-2xl border border-white/10 bg-[#141414]/95 shadow-2xl backdrop-blur-xl transition-transform duration-200",
-        isOpen ? "translate-x-0" : "translate-x-[calc(100%+1rem)]"
+        // Absolute, not fixed: the parent is App's relative canvas wrapper, so the panel sits
+        // flush against the canvas edge with no gap and no rounding — attached, not floating.
+        // It overlays rather than shrinking the canvas; React Flow pans, so nothing ends up
+        // unreachable behind it.
+        "absolute inset-y-0 right-0 z-40 flex flex-col border-l border-white/10 bg-[#141414]/95 shadow-2xl backdrop-blur-xl transition-transform duration-200",
+        isOpen ? "translate-x-0" : "translate-x-full"
       )}
     >
+      {/* Grab strip. Straddles the border so the 6px target is centred on the visible edge. */}
+      <div
+        {...resizeHandleProps}
+        role="separator"
+        aria-orientation="vertical"
+        title="Drag to resize"
+        className="absolute inset-y-0 left-0 z-10 w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-[#6457f9]/40"
+      />
+
       {/* Header */}
       <div className="flex shrink-0 items-center gap-3 border-b border-white/10 px-4 py-3.5">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#6457f9]/20">
@@ -286,12 +300,15 @@ export function AiSidebar({
                       </p>
                     )}
                     {msg.questions?.length ? (
-                      <ClarifyQuestions
+                      <ClarifyRecord
                         questions={msg.questions}
-                        // Only the newest round is answerable; earlier rounds are a record.
-                        active={i === messages.length - 1}
-                        disabled={isLoading}
-                        onSubmit={send}
+                        // Reopening is offered only for the live round the viewer set aside.
+                        // Every other round is answered, or was answered by a peer.
+                        onReopen={
+                          activeRound?.id === msg.id && dismissedRound === msg.id
+                            ? () => setDismissedRound(null)
+                            : undefined
+                        }
                       />
                     ) : null}
                     {msg.change && (
@@ -338,8 +355,19 @@ export function AiSidebar({
         )}
       </div>
 
-      {/* Input */}
+      {/* Composer slot — the stepper takes it over while a round is live, so there is exactly
+          one thing to act on and no ambiguity about whether to type or pick. */}
       <div className="shrink-0 border-t border-white/8 p-3">
+        {stepperOpen && activeRound?.questions ? (
+          <ClarifyStepper
+            // Remount per round: the step index and picks must not survive into the next one.
+            key={activeRound.id}
+            questions={activeRound.questions}
+            disabled={isLoading}
+            onSubmit={send}
+            onDismiss={() => setDismissedRound(activeRound.id)}
+          />
+        ) : (
         <div className="flex flex-col gap-2 rounded-xl border border-white/8 bg-white/5 p-3">
           <textarea
             ref={textareaRef}
@@ -374,6 +402,7 @@ export function AiSidebar({
             )}
           </div>
         </div>
+        )}
       </div>
     </aside>
   );
