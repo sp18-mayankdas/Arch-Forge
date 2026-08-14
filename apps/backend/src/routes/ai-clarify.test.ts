@@ -4,7 +4,9 @@ import {
   validateSuggestions,
   readConversation,
   readGraph,
-  readAskedLast,
+  countTrailingAskTurns,
+  buildSystemPrompt,
+  MAX_ASK_ROUNDS,
   MAX_QUESTIONS,
   MAX_OPTIONS,
   MAX_SUGGESTIONS,
@@ -271,57 +273,143 @@ describe("validateSuggestions", () => {
   });
 });
 
-describe("readAskedLast", () => {
+describe("countTrailingAskTurns", () => {
   const asst = (content: string, asked?: boolean) => ({ role: "assistant", content, asked });
   const user = (content: string) => ({ role: "user", content });
 
-  it("is false when there is no assistant turn yet — the opening move may always ask", () => {
-    expect(readAskedLast({ messages: [user("create a login system")] })).toBe(false);
+  it("is 0 when there is no assistant turn yet — the opening move may always ask", () => {
+    expect(countTrailingAskTurns({ messages: [user("create a login system")] })).toBe(0);
   });
 
-  it("is false for a missing or malformed body", () => {
-    expect(readAskedLast({})).toBe(false);
-    expect(readAskedLast(undefined)).toBe(false);
-    expect(readAskedLast({ prompt: "hi" })).toBe(false);
+  it("is 0 for a missing or malformed body", () => {
+    expect(countTrailingAskTurns({})).toBe(0);
+    expect(countTrailingAskTurns(undefined)).toBe(0);
+    expect(countTrailingAskTurns({ prompt: "hi" })).toBe(0);
   });
 
-  it("is true when the last assistant turn asked", () => {
-    expect(readAskedLast({ messages: [user("a"), asst("which?", true)] })).toBe(true);
+  it("is 0 when the newest assistant turn did not ask — a new prompt may always ask again", () => {
+    expect(countTrailingAskTurns({ messages: [user("a"), asst("here it is", false)] })).toBe(0);
   });
 
-  it("is false when the last assistant turn did not ask", () => {
-    expect(readAskedLast({ messages: [user("a"), asst("here it is", false)] })).toBe(false);
+  it("is 1 after a single ask round", () => {
+    expect(countTrailingAskTurns({ messages: [user("a"), asst("which?", true)] })).toBe(1);
   });
 
-  it("PRESUMES TRUE when the flag is absent — a stale client must not question-loop", () => {
-    // The load-bearing back-compat assertion: an older bundle sends no flag, and the failure
-    // direction has to be less asking, never a loop.
-    expect(readAskedLast({ messages: [user("a"), asst("which?")] })).toBe(true);
-  });
-
-  it("looks at the last ASSISTANT turn, not the last turn — the user's answer sits between", () => {
+  it("counts consecutive ask rounds with the user's answers between them", () => {
+    // The whole point of the counter: answering a round must not bar the next question.
     expect(
-      readAskedLast({ messages: [user("a"), asst("which?", true), user("this one")] })
-    ).toBe(true);
-  });
-
-  it("uses the newest assistant turn when an older one asked", () => {
-    expect(
-      readAskedLast({
-        messages: [user("a"), asst("which?", true), user("this"), asst("drawn", false)],
+      countTrailingAskTurns({
+        messages: [
+          user("a login system"),
+          asst("which sign-in methods?", true),
+          user("email and password"),
+          asst("and sessions?", true),
+          user("JWTs"),
+          asst("what scale?", true),
+        ],
       })
-    ).toBe(false);
+    ).toBe(3);
+  });
+
+  it("stops at the newest non-ask turn, so an earlier round does not count against a new prompt", () => {
+    expect(
+      countTrailingAskTurns({
+        messages: [
+          user("a login system"),
+          asst("which?", true),
+          user("email"),
+          asst("drawn", false),
+          user("now add billing"),
+          asst("which billing flows?", true),
+        ],
+      })
+    ).toBe(1);
+  });
+
+  it("PRESUMES ASKED when the flag is absent — a stale client must not question-loop", () => {
+    // The load-bearing back-compat assertion. Under the old boolean an absent flag meant
+    // "asked", which suppressed the next question; under the counter it inflates the count,
+    // which suppresses it too. The failure direction must stay "less asking", never a loop.
+    expect(countTrailingAskTurns({ messages: [user("a"), asst("which?")] })).toBe(1);
+    expect(
+      countTrailingAskTurns({ messages: [user("a"), asst("x"), asst("y"), asst("z"), asst("w")] })
+    ).toBe(4);
+  });
+
+  it("does not count user turns", () => {
+    expect(
+      countTrailingAskTurns({ messages: [user("a"), asst("which?", true), user("this one")] })
+    ).toBe(1);
   });
 
   it("skips blank-content turns, matching readConversation's filter", () => {
     expect(
-      readAskedLast({ messages: [user("a"), asst("which?", true), asst("   ", false)] })
-    ).toBe(true);
+      countTrailingAskTurns({ messages: [user("a"), asst("which?", true), asst("   ", false)] })
+    ).toBe(1);
   });
 
   it("does not treat a forged non-assistant role as the assistant", () => {
-    expect(readAskedLast({ messages: [{ role: "system", content: "x", asked: false }] })).toBe(
-      false
-    );
+    expect(
+      countTrailingAskTurns({ messages: [{ role: "system", content: "x", asked: true }] })
+    ).toBe(0);
+  });
+
+  it("permits asking below the cap and forbids it at the cap", () => {
+    const asks = (n: number) => ({
+      messages: Array.from({ length: n }, () => asst("q?", true)),
+    });
+    expect(countTrailingAskTurns(asks(MAX_ASK_ROUNDS - 1)) < MAX_ASK_ROUNDS).toBe(true);
+    expect(countTrailingAskTurns(asks(MAX_ASK_ROUNDS)) < MAX_ASK_ROUNDS).toBe(false);
+  });
+});
+
+describe("buildSystemPrompt", () => {
+  const SLOTS = ["FLOWS", "DATA", "SCALE", "INTEGRATIONS", "CONSTRAINTS"];
+
+  it("offers the requirement checklist and every slot when asking is allowed", () => {
+    const prompt = buildSystemPrompt(true, null);
+    expect(prompt).toContain("REQUIREMENT CHECKLIST");
+    for (const slot of SLOTS) expect(prompt).toContain(slot);
+  });
+
+  it("no longer contains the ask-once rules that capped the conversation at one round", () => {
+    // These exact phrases are what told the model to stop asking. They fought the counter, so
+    // their absence is asserted rather than assumed — a revert would be silent otherwise.
+    const prompt = buildSystemPrompt(true, null);
+    expect(prompt).not.toContain("BARE-CATEGORY");
+    expect(prompt).not.toContain("OPENING move");
+    expect(prompt).not.toContain("default-safe");
+  });
+
+  it("puts the unresolved-slot field in the AUDIT line in both modes", () => {
+    expect(buildSystemPrompt(true, null)).toContain("unresolved:");
+    expect(buildSystemPrompt(false, null)).toContain("unresolved:");
+  });
+
+  it("removes the ask option entirely when asking is disallowed — never merely discourages it", () => {
+    // The checklist itself stays: the model still has to know which slots are open so it can
+    // name each guess in "tradeoff". What must be ABSENT is every route to action "ask".
+    const prompt = buildSystemPrompt(false, null);
+    expect(prompt).toContain("You may NOT ask this turn");
+    expect(prompt).toContain("REQUIREMENT CHECKLIST");
+    expect(prompt).not.toContain('"ask" —');
+    expect(prompt).not.toContain("THE RULE: if any slot is UNRESOLVED");
+    expect(prompt).not.toContain("STEP 3 — IF ASKING");
+  });
+
+  it("tells the model that a waived question is resolved and must not be re-asked", () => {
+    const prompt = buildSystemPrompt(true, null);
+    expect(prompt).toContain("you decide");
+    expect(prompt.toLowerCase()).toContain("never ask that question again");
+  });
+
+  it("scopes the checklist to the change when a canvas exists", () => {
+    const prompt = buildSystemPrompt(true, {
+      v: 1,
+      nodes: [{ id: "orders-db", t: "sql_db", l: "Orders DB" }],
+      edges: [],
+    });
+    expect(prompt).toContain("THE CHANGE ONLY");
+    expect(prompt).toContain("Orders DB");
   });
 });

@@ -77,6 +77,30 @@ export const MAX_QUESTIONS = 3;
 export const MAX_OPTIONS = 4;
 const MIN_OPTIONS = 2;
 
+/**
+ * The most ask rounds that may run back to back. NOT the pacing rule — the REQUIREMENT
+ * CHECKLIST in the prompt decides whether a turn asks. This is a runaway guard: the canvas is
+ * shared live and has no undo, so a model stuck in a question loop would make the room unusable.
+ * Exported for tests.
+ */
+export const MAX_ASK_ROUNDS = 4;
+
+/**
+ * Completion budget for one turn. Override with AI_MAX_TOKENS.
+ *
+ * This is charged against the provider's per-request limit UP FRONT, before a single token is
+ * generated: Groq's free tier allows 12k tokens per minute, and `prompt + max_tokens` counted
+ * 12265, so every call 413'd with "Request too large" — the reservation, not the reply, was over
+ * budget. The old value was 8192 "generous headroom", which left the system prompt alone eating
+ * the rest of the allowance.
+ *
+ * 4096 still comfortably fits the largest design the prompt permits (30 nodes plus edges and the
+ * thinking block is well under 3k), and leaves room for a transcript that grows every turn — which
+ * matters more now that a conversation can run several question rounds. Raise it via env on a
+ * provider with a larger window; do not raise the default, or small free tiers stop working.
+ */
+const MAX_COMPLETION_TOKENS = Number(process.env.AI_MAX_TOKENS) || 4096;
+
 export const MAX_SUGGESTIONS = 3;
 // A "suggestion" longer than this is prose the model put in the wrong field. Since the label
 // IS the next user turn, truncating would send a mid-word fragment as a prompt — dropping is
@@ -84,7 +108,7 @@ export const MAX_SUGGESTIONS = 3;
 const MAX_SUGGESTION_LABEL = 90;
 const MAX_SUGGESTION_RATIONALE = 160;
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   allowClarify: boolean,
   graph: SerializedGraph | null,
 ): string {
@@ -148,42 +172,38 @@ someone who asked a question is a non-answer.
 
 "generate" — build or change the diagram.
 
-"ask" — the request names a KIND of system without pinning down what it must DO.
+"ask" — a fact you would otherwise have to INVENT is still unknown.
 
-THE BARE-CATEGORY TEST decides between them, and it is mechanical. Read the user's message and
-count how many of these it gives you:
-  (a) a specific component, service or technology by name
-  (b) what data it holds or moves
-  (c) a scale, load or latency figure
-  (d) an explicit constraint ("no auth", "must be offline-first", "internal only")
-If the message names a system category and gives you NONE of (a)-(d), it is a BARE CATEGORY —
-ASK. "A login system", "an e-commerce backend", "a booking system", "a hospital appointment
-system" are all bare categories, however familiar they feel. Familiarity is not specification:
-you can picture A login system, not THEIR login system.
+THE CHECKLIST DECIDES between them, and it is mechanical.
 
-Generate instead when ANY of these holds:
-- The message gives you one or more of (a)-(d) — enough to design something recognisably theirs.
-- The user waived the questions ("just build it", "your call", "you decide", "I don't know").
-- There is already a canvas and the message is an instruction to change it ("add payments",
-  "simplify this", "split the orders service"). Editing is not the moment for questions —
-  default, draw, and name the guess in "tradeoff".
-- It is not an architecture request at all (greeting, small talk, a question about you).
+THE RULE: if any slot is UNRESOLVED and settling it would change which nodes exist, "action"
+MUST be "ask". You may not generate over an unresolved slot, and you may not resolve one by
+picking something reasonable — inventing the answer is the exact failure this rule exists to
+prevent. When every slot is resolved or waived, generate.
 
-So: asking is for the OPENING move on an empty canvas. Editing an existing diagram almost
-always means generate — default anything open, put the guess in "tradeoff", and offer the other
-branch as a suggestion so the user can flip it in one click. Once a canvas exists, ask only
-when the new message opens a genuine fork that changes several nodes and you cannot defend
-either branch. Never to refine something you already asked, or for reassurance before drawing.
+SCOPE THE CHECKLIST TO WHAT WAS ASKED. When CURRENT CANVAS is non-empty and the message is an
+instruction to change it, run the checklist against THE CHANGE ONLY, never the whole system, and
+ask only about facts the change itself leaves open. A specific instruction that names a component
+and an action leaves nothing open — generate. Nobody who asked you to rename a node wants to be
+asked about compliance.
+
+ASK AGAIN AS OFTEN AS IT TAKES. Answering one round does not entitle you to guess the rest: if
+slots are still UNRESOLVED after the user's answer, ask the next round. Never re-ask something
+already answered or waived, and never ask for reassurance before drawing.
+
+If it is not an architecture request at all — a greeting, small talk, a question about you — reply.
 
 Calibration — these teach the JUDGEMENT, not the words. Never reuse their phrasing:
-- "build a video sharing site" → ask. Whether a clip is watchable before processing finishes
-  decides whether a queue and workers exist at all.
+- "build a video sharing site" → ask. FLOWS and SCALE are open, and whether a clip is watchable
+  before processing finishes decides whether a queue and workers exist at all.
 - "design an e-commerce backend" → ask. Payments, inventory, search and fulfilment are
   separable systems and you do not know which are in scope.
-- "a URL shortener, Postgres, ~1k rps, no auth" → generate. Everything structural is pinned.
+- "a URL shortener, Postgres, ~1k rps, no auth" → generate. Every slot is pinned.
 - "an internal tool, just build it" → generate. The user waived the questions.
-- "add notifications to this" (canvas already populated) → generate. You can default to a
-  queue and a worker and say so. Not a coin flip.
+- "add notifications to this", canvas populated → ask, about the change only: whether a
+  notification may arrive minutes late decides whether a queue and a worker exist.
+- "cache the Orders DB reads", canvas populated → generate. It names the node and the action, so
+  the change leaves nothing open.
 - "should this use Postgres or MySQL?" → reply. A question, and not a topology choice — it is
   one sql_db node either way.
 - "why did you put a cache there?" → reply. Answer the question.
@@ -207,9 +227,12 @@ beat three; one is fine. Each needs:
 
 ASK WHAT THE SYSTEM MUST DO. NEVER ASK WHAT IT SHOULD BE BUILT FROM. Technology names belong
 inside an option's description, never in the question.
+- Ask about UNRESOLVED slots only, highest-impact first. Before writing a question, name to
+  yourself which slot it settles; if it settles none, delete it.
 - Before writing an option, name to yourself which nodes it adds, removes or retypes. If two
   options lead to the same node set, the question is decoration — delete it.
-- Never ask about anything the user already told you or that is already on the canvas.
+- Never ask about anything the user already told you, already waived with "you decide", or that
+  is already on the canvas.
 - No "Basic / Advanced / Custom". No question everyone answers the same way.
 - Put the safe, common choice first.
 - "summary" is one short friendly line introducing the questions. Do not restate them in it,
@@ -245,18 +268,19 @@ are defensible, and the two options imply visibly different diagrams — one has
 worker, the other does not.`
     : `STEP 2 — DECIDE: reply, or generate? You may NOT ask this turn.
 
-Set "action" to "reply" or "generate" and leave "questions" empty. You asked on the previous
-turn — you may not ask twice in a row. Act now.
+Set "action" to "reply" or "generate" and leave "questions" empty. You have asked several turns
+running, so act now on what you have. The AUDIT rule that unresolved slots force an ask does not
+apply this turn: still list them, then settle each one yourself and name it as an assumption.
 
 Choose "reply" when the user is not asking for the diagram to change: a question about the
 design, an opinion, thanks, or small talk. Answer properly in "summary", naming the actual
 nodes, and leave "nodes"/"edges" empty. You are a collaborator, not a diagram vending machine.
 
 Otherwise choose "generate": build or amend the diagram now, using whatever the user has told
-you plus your own judgement for anything still open. Anything you had to guess goes in
-"tradeoff" as a named assumption — and if the guess was a real fork, offer the other branch as
-a suggestion so the user can flip it in one click. That is how you handle an open question
-without stopping to ask one.`;
+you plus your own judgement for anything still open. EVERY guess you had to make goes in
+"tradeoff" as a named assumption — if there were several, name them in one sentence. If a guess
+was a real fork, offer the other branch as a suggestion so the user can flip it in one click.
+That is how you handle an open question without stopping to ask one.`;
 
   return `You are ArchForge, an experienced system architect working alongside someone on a
 shared architecture canvas. You have opinions, you explain your reasoning, and you push back
@@ -274,20 +298,41 @@ A few sentences of plain prose, then one AUDIT line. In the prose:
 - What is the user actually asking for — a change to the diagram, a question about it, or neither?
 - If it is a change: which nodes exist AFTERWARDS, which go away, and how do the survivors
   connect once the removed ones are gone?
-- Which ONE open decision would most change the SHAPE of this diagram, and could you pick a
-  sensible answer yourself, or is it genuinely a coin flip?
+- Run the REQUIREMENT CHECKLIST below over what was asked. For each of the five slots say
+  resolved, waived, or UNRESOLVED, and list the unresolved ones by name.
 - What is the weakest part of what you are about to draw — the thing that gives way first?
-Reason honestly. If you notice yourself about to assume a technology, feature or scale the user
-never mentioned, name that assumption here; you will have to state it later.
+Reason honestly. You are not permitted to settle an unresolved slot by picking something
+sensible. If you catch yourself about to invent a technology, a feature, a scale figure or a
+constraint the user never mentioned, that slot is UNRESOLVED — say so here and ask about it.
 
 End "thinking" with exactly this line, filled in, with nothing after it:
 
-AUDIT | wants: change|question|chitchat | nodes-now: <N> | nodes-after: <M or -> | open-fork: <short phrase or none> | default-safe: yes|no | action: reply|ask|generate
+AUDIT | wants: change|question|chitchat | nodes-now: <N> | nodes-after: <M or -> | unresolved: <slot names, comma-separated, or none> | action: reply|ask|generate
 
 "nodes-now" is the node count in CURRENT CANVAS (0 if empty). "nodes-after" is how many you are
-about to return, or "-" if none. "default-safe: yes" means you could settle the open fork
-yourself and state it as an assumption without much risk of being wrong. Your "action" field
-MUST be identical to the action in this line.
+about to return, or "-" if none. "unresolved" lists the checklist slots you could not resolve from
+what the user has told you and what is on the canvas, or "none". Your "action" field MUST be
+identical to the action in this line.
+
+THE REQUIREMENT CHECKLIST — five slots, and you must know where each one stands:
+  FLOWS        — which actions the system must support, end to end
+  DATA         — what it stores or moves, and whether it must be durable or consistent
+  SCALE        — rough load, and whether work may happen asynchronously
+  INTEGRATIONS — which external systems it must reach
+  CONSTRAINTS  — auth, tenancy, offline, compliance, internal-only
+
+A slot is RESOLVED when any one of these holds:
+  1. the user stated it, in any turn of this conversation;
+  2. it is unambiguous from CURRENT CANVAS;
+  3. the user WAIVED it — see below.
+Otherwise it is UNRESOLVED.
+
+WAIVERS ARE MECHANICAL. The user's answers arrive as "<Question header>: <answer>" clauses. An
+answer of exactly "you decide" is a WAIVER of that question: the slot it belongs to is RESOLVED,
+you pick the default yourself, and you name that guess in "tradeoff". "just build it", "your
+call", "you decide" and "I don't know" waive EVERY open slot at once. Listing a waived slot as
+unresolved is an error, and re-asking a waived question — in any wording, however narrowed — is
+the single most annoying thing you can do. A question was answered once; that is the end of it.
 
 ${decision}
 
@@ -303,6 +348,9 @@ STEP 4 — IF GENERATING: build the graph, then name what it costs.
 - Node IDs are unique short slugs, e.g. "api-gateway", "orders-db". Edge IDs are unique too.
 - Every edge's source and target must be an id you also declared in "nodes".
 - "label" is the human-readable name shown on the node, e.g. "Orders DB".
+- "you decide" against a question in the user's message means they WAIVED that one. Pick the
+  sensible default, treat the slot as resolved, name the guess in "tradeoff".
+  Once waived, never ask that question again.
 
 Then fill "tradeoff" — ONE sentence, at most 25 words, in this form:
   <a named part of THIS diagram> + <what gives way> + <under what condition>
@@ -360,16 +408,18 @@ USER said instead, in their words.
 
 BEFORE YOU OUTPUT, check each line and fix anything that fails:
 1. "thinking" ends with the AUDIT line, and "action" matches the action named there.
-2. If generating: every edge's source and target is an id in "nodes"; no node is left
+2. If "unresolved" names any slot and you were allowed to ask, "action" is "ask". If "action" is
+   "generate", either "unresolved" is "none" or every slot named there is settled in "tradeoff".
+3. If generating: every edge's source and target is an id in "nodes"; no node is left
    unconnected; "tradeoff" is one falsifiable sentence naming a real part of THIS diagram.
-3. If the user asked for something simpler or smaller: your node count is LOWER than nodes-now.
-4. If asking: "suggestions", "nodes" and "edges" are empty, "tradeoff" is "", and every question
+4. If the user asked for something simpler or smaller: your node count is LOWER than nodes-now.
+5. If asking: "suggestions", "nodes" and "edges" are empty, "tradeoff" is "", and every question
    has at least ${MIN_OPTIONS} options.
-5. Every suggestion names something in your "nodes" or in CURRENT CANVAS, and would make no
+6. Every suggestion names something in your "nodes" or in CURRENT CANVAS, and would make no
    sense pasted under a different diagram.
-6. Every suggestion "label" reads as a sentence the USER would type. No question marks.
-7. Nothing you wrote reuses the wording of an example in this prompt.
-8. You are emitting one JSON object and nothing else.
+7. Every suggestion "label" reads as a sentence the USER would type. No question marks.
+8. Nothing you wrote reuses the wording of an example in this prompt.
+9. You are emitting one JSON object and nothing else.
 
 OUTPUT FORMAT:
 Respond with ONLY a single JSON object (no prose, no markdown code fences, no explanation).
@@ -668,33 +718,43 @@ export function readConversation(body: unknown): AiChatTurn[] {
 }
 
 /**
- * Did the assistant's most recent turn ask clarifying questions? The transcript the client
- * posts is role + content only, so the backend cannot see this for itself — the client tags
- * the turn it actually rendered.
+ * How many ask rounds the assistant has run BACK TO BACK at the tail of the transcript.
  *
- * An absent tag is presumed YES. See `AiChatTurn.asked`: the failure mode of a lost or forged
- * tag must be less asking, never a question loop. Forgeability is not a concern here — the
+ * This is the pacing signal for clarifying questions, and it replaced a boolean ("did the
+ * previous turn ask?") that capped every conversation at exactly one question round. That cap
+ * was the bug: after a single answer the model was barred from asking again and had to invent
+ * every remaining unknown. Whether to ask is decided by the REQUIREMENT CHECKLIST in the
+ * prompt; this number only bounds a runaway.
+ *
+ * Walk back from the end, count consecutive assistant turns that asked, stop at the first that
+ * did not. A non-ask turn therefore RESETS the count, which is what lets a brand-new prompt open
+ * a fresh round of questions.
+ *
+ * An absent `asked` flag is PRESUMED to be an ask. See `AiChatTurn.asked`: the failure mode of a
+ * lost or forged tag must be less asking, never a question loop — and under a counter, counting a
+ * missing flag as an ask is the direction that suppresses. Forgeability is not a concern: the
  * whole transcript is already client-supplied and unverified (which is exactly why `role` is
- * coerced above), and the worst a forged value buys is one extra offered question round. This
- * guards pacing, not access; do not "harden" it into server-side state.
+ * coerced above), and the worst a forged value buys is one extra offered round. This guards
+ * pacing, not access; do not "harden" it into server-side state.
  *
  * Exported for tests.
  */
-export function readAskedLast(body: unknown): boolean {
+export function countTrailingAskTurns(body: unknown): number {
   const { messages } = (body ?? {}) as {
     messages?: { role?: string; asked?: boolean; content?: string }[];
   };
-  if (!Array.isArray(messages)) return false;
+  if (!Array.isArray(messages)) return 0;
 
+  let rounds = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     // `role !== "assistant"` must match readConversation's coercion byte for byte, so a
     // forged `role: "system"` turn is "not the assistant" to both readers.
     if (!isUsableTurn(m) || m?.role !== "assistant") continue;
-    return m.asked !== false;
+    if (m.asked === false) break;
+    rounds++;
   }
-  // No assistant turn yet: the opening move may always ask.
-  return false;
+  return rounds;
 }
 
 router.post("/generate", async (req, res) => {
@@ -712,15 +772,14 @@ router.post("/generate", async (req, res) => {
 
     const graph = readGraph(req.body);
 
-    // Questions are allowed mid-conversation: a request to change an existing diagram can be
-    // exactly as underspecified as the first one ("add payments", "make it faster"). Counting
-    // user turns used to be the proxy for "don't loop", but it also banned every later
-    // question including the useful ones — and the old non-empty-canvas clause banned them
-    // twice over, since after the first turn there is always a canvas.
+    // Asking is allowed on any turn. A request to change an existing diagram can be exactly as
+    // underspecified as the first one, and one answered question usually leaves the next one
+    // open — so "never twice in a row" capped every conversation at a single round and
+    // everything still unknown after it got guessed instead of asked about.
     //
-    // The one rule still enforced in CODE, never left to the model to count, is that it may
-    // not ask twice in a row: no second question until the user has seen an answer.
-    const allowClarify = !readAskedLast(req.body);
+    // The only rule left in CODE is the runaway cap. What decides whether THIS turn asks is the
+    // REQUIREMENT CHECKLIST in the system prompt.
+    const allowClarify = countTrailingAskTurns(req.body) < MAX_ASK_ROUNDS;
 
     const completion = await getClient().chat.completions.create({
       model: MODEL,
@@ -728,9 +787,11 @@ router.post("/generate", async (req, res) => {
       // filling a fixed JSON shape, neither of which is a creativity task. Suggestion variety
       // comes from the five-row menu in the prompt, not from sampling.
       temperature: 0.3,
-      // Generous budget: the thinking phase and a full design both come out of this, so a
-      // small cap truncates the JSON mid-object and the whole turn fails to parse.
-      max_tokens: 8192,
+      // The thinking phase and a full design both come out of this, so too small a cap
+      // truncates the JSON mid-object and the whole turn fails to parse — but the value is also
+      // reserved against the provider's per-request limit, so too large a cap 413s before
+      // generation starts. See MAX_COMPLETION_TOKENS.
+      max_tokens: MAX_COMPLETION_TOKENS,
       messages: [
         { role: "system", content: buildSystemPrompt(allowClarify, graph) },
         ...conversation,

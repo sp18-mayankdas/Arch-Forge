@@ -1,9 +1,20 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Bot, Users, Copy, Check, Wifi, WifiOff, TriangleAlert } from "lucide-react";
+import {
+  Bot,
+  Users,
+  Copy,
+  Check,
+  Wifi,
+  WifiOff,
+  TriangleAlert,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { GhostCanvas } from "@/components/canvas/GhostCanvas";
 import { AiSidebar } from "@/components/AiSidebar";
 import { useYjsSync } from "@/hooks/useYjsSync";
+import { useSidebarWidth } from "@/hooks/useSidebarWidth";
 import { createRoom } from "@/lib/yjs";
 import { applyOps, setPositions, readSemanticGraph, diffToOps } from "@/lib/semantic-ops";
 import { layoutGraph } from "@/lib/layout";
@@ -41,6 +52,9 @@ export default function App() {
   const [synced, setSynced] = useState(false);
   const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
   const roomId = useMemo(() => getRoomId(), []);
+  // Lives here rather than in the panel because the arrow tab is positioned against the panel's
+  // edge from outside it, and has to stay visible once the panel is translated away.
+  const { width: sidebarWidth, dragging, handleProps } = useSidebarWidth();
 
   const { doc, provider, messagesArray, user } = useMemo(() => createRoom(roomId), [roomId]);
 
@@ -263,8 +277,31 @@ export default function App() {
           </div>
         )}
 
+        {/* Arrow tab. Lives out here rather than inside the panel because it must stay visible
+            when the panel is translated off-screen; it tracks the panel's edge when open. */}
+        <button
+          onClick={() => setSidebarOpen((o) => !o)}
+          title={sidebarOpen ? "Hide assistant" : "Show assistant"}
+          aria-label={sidebarOpen ? "Hide assistant" : "Show assistant"}
+          style={{ right: sidebarOpen ? sidebarWidth : 0 }}
+          className={cn(
+            "absolute top-1/2 z-50 flex h-12 w-5 -translate-y-1/2 items-center justify-center rounded-l-lg border border-r-0 border-white/10 bg-[#141414]/95 text-white/40 backdrop-blur-xl hover:bg-white/10 hover:text-white",
+            // Animate the slide when toggling, but never while dragging — a transition on
+            // `right` makes the tab lag visibly behind the edge it is supposed to be attached to.
+            dragging ? "transition-colors" : "transition-all duration-200"
+          )}
+        >
+          {sidebarOpen ? (
+            <ChevronRight className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronLeft className="h-3.5 w-3.5" />
+          )}
+        </button>
+
         <AiSidebar
           isOpen={sidebarOpen}
+          width={sidebarWidth}
+          resizeHandleProps={handleProps}
           onClose={() => setSidebarOpen(false)}
           onApplyDesign={handleApplyDesign}
           readGraphForAi={readGraphForAi}

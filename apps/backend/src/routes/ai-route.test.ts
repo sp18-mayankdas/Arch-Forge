@@ -3,6 +3,9 @@ import express from "express";
 import http from "http";
 import type { AddressInfo } from "net";
 import type { GenerateResponse } from "@archforge/shared";
+// vi.mock is hoisted above imports, so pulling a constant from the module under test here
+// does not defeat the SDK mock below.
+import { MAX_ASK_ROUNDS } from "./ai";
 
 /**
  * Route-level tests for the response contract. These exist because the canvas-wipe bug they
@@ -70,12 +73,21 @@ describe("POST /api/generate", () => {
     return (await res.json()) as GenerateResponse;
   }
 
-  /** A turn against the populated canvas, with the previous assistant turn having asked —
-   * so the server vetoes any further ask. */
-  const editAfterAsk = (prompt: string) => ({
+  /**
+   * A turn against the populated canvas with the ask allowance already spent — MAX_ASK_ROUNDS
+   * consecutive ask turns behind it, so the server vetoes any further ask.
+   *
+   * It takes a whole run of rounds rather than one because a single prior ask no longer vetoes
+   * anything: asking repeatedly is the point, and only the runaway cap closes the option. Tests
+   * that exercise the veto path (the canvas-wipe regression above all) need the cap reached.
+   */
+  const editAtAskCap = (prompt: string) => ({
     messages: [
       { role: "user", content: "build something" },
-      { role: "assistant", content: "which kind?", asked: true },
+      ...Array.from({ length: MAX_ASK_ROUNDS }, (_, i) => [
+        { role: "assistant", content: `question ${i}?`, asked: true },
+        { role: "user", content: `answer ${i}` },
+      ]).flat(),
       { role: "user", content: prompt },
     ],
     graph: POPULATED_GRAPH,
@@ -102,7 +114,7 @@ describe("POST /api/generate", () => {
       edges: [],
       summary: "A question.",
     });
-    return post(editAfterAsk("change it")).then((body) => {
+    return post(editAtAskCap("change it")).then((body) => {
       expect(body.applied).toBe(false);
       expect(body.nodes).toEqual([]);
     });
@@ -128,10 +140,10 @@ describe("POST /api/generate", () => {
 
   it("never applies an unknown or missing action", async () => {
     nextContent = JSON.stringify({ action: "ponder", nodes: [], edges: [], summary: "hm" });
-    expect((await post(editAfterAsk("x"))).applied).toBe(false);
+    expect((await post(editAtAskCap("x"))).applied).toBe(false);
 
     nextContent = JSON.stringify({ nodes: [], edges: [], summary: "hm" });
-    expect((await post(editAfterAsk("y"))).applied).toBe(false);
+    expect((await post(editAtAskCap("y"))).applied).toBe(false);
   });
 
   it("never applies an empty generate against a populated canvas", async () => {
@@ -143,7 +155,7 @@ describe("POST /api/generate", () => {
       edges: [],
       summary: "Cleared.",
     });
-    const body = await post(editAfterAsk("simplify"));
+    const body = await post(editAtAskCap("simplify"));
     expect(body.applied).toBe(false);
     warn.mockRestore();
   });
@@ -160,7 +172,7 @@ describe("POST /api/generate", () => {
     // the model forever — teaching it to mirror its own failure.
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     nextContent = "I'm afraid I can't do that.";
-    const body = await post(editAfterAsk("change it"));
+    const body = await post(editAtAskCap("change it"));
     expect(body.applied).toBe(false);
     expect(body.summary).toBeTruthy();
     err.mockRestore();
@@ -182,7 +194,7 @@ describe("POST /api/generate", () => {
       ],
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const body = await post(editAfterAsk("draw it"));
+    const body = await post(editAtAskCap("draw it"));
     expect(body.applied).toBe(true);
     expect(body.nodes).toHaveLength(2);
     expect(body.tradeoff).toContain("Orders DB");
@@ -193,20 +205,37 @@ describe("POST /api/generate", () => {
     warn.mockRestore();
   });
 
-  it("offers the ask option only when the previous assistant turn did not ask", async () => {
+  const promptOfLastCall = () =>
+    (create.mock.calls.at(-1)?.[0] as { messages: { content: string }[] }).messages[0].content;
+
+  it("keeps offering the ask option after the user answers a round", async () => {
+    // The reported bug. One answered round used to close the option for the rest of the
+    // conversation, so everything still unknown got invented instead of asked about.
     nextContent = JSON.stringify({ action: "reply", nodes: [], edges: [], summary: "ok" });
 
-    await post({ messages: [{ role: "user", content: "build a login system" }], graph: { v: 0, nodes: [], edges: [] } });
-    const firstTurnPrompt = (create.mock.calls.at(-1)?.[0] as { messages: { content: string }[] })
-      .messages[0].content;
-    expect(firstTurnPrompt).toContain("reply, ask, or generate");
+    await post({
+      messages: [{ role: "user", content: "build a login system" }],
+      graph: { v: 0, nodes: [], edges: [] },
+    });
+    expect(promptOfLastCall()).toContain("reply, ask, or generate");
 
-    await post(editAfterAsk("still vague"));
-    const afterAskPrompt = (create.mock.calls.at(-1)?.[0] as { messages: { content: string }[] })
-      .messages[0].content;
-    // Not merely discouraged — absent.
-    expect(afterAskPrompt).toContain("You may NOT ask this turn");
-    expect(afterAskPrompt).not.toContain("reply, ask, or generate");
+    await post({
+      messages: [
+        { role: "user", content: "build a login system" },
+        { role: "assistant", content: "which sign-in methods?", asked: true },
+        { role: "user", content: "Sign-in methods: Email + password" },
+      ],
+      graph: { v: 0, nodes: [], edges: [] },
+    });
+    expect(promptOfLastCall()).toContain("reply, ask, or generate");
+  });
+
+  it("removes the ask option once the runaway cap is reached — absent, not discouraged", async () => {
+    nextContent = JSON.stringify({ action: "reply", nodes: [], edges: [], summary: "ok" });
+    await post(editAtAskCap("still vague"));
+    const prompt = promptOfLastCall();
+    expect(prompt).toContain("You may NOT ask this turn");
+    expect(prompt).not.toContain("reply, ask, or generate");
   });
 
   it("allows a mid-conversation ask once the user has seen an answer", async () => {
@@ -219,14 +248,12 @@ describe("POST /api/generate", () => {
       ],
       graph: POPULATED_GRAPH,
     });
-    const prompt = (create.mock.calls.at(-1)?.[0] as { messages: { content: string }[] })
-      .messages[0].content;
-    expect(prompt).toContain("reply, ask, or generate");
+    expect(promptOfLastCall()).toContain("reply, ask, or generate");
   });
 
   it("feeds computed canvas observations into the prompt", async () => {
     nextContent = JSON.stringify({ action: "reply", nodes: [], edges: [], summary: "ok" });
-    await post(editAfterAsk("what's wrong with this?"));
+    await post(editAtAskCap("what's wrong with this?"));
     const prompt = (create.mock.calls.at(-1)?.[0] as { messages: { content: string }[] })
       .messages[0].content;
     expect(prompt).toContain("CANVAS OBSERVATIONS");
