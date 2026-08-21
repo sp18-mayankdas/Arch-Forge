@@ -12,7 +12,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 3000,
     // Allow any Host header so the dev server works behind a tunnel (ngrok, etc.).
     allowedHosts: true,
     // Same-origin proxy to the backend so the whole app is reachable through ONE

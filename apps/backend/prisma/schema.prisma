@@ -1,0 +1,21 @@
+// ArchForge database schema (Prisma 7).
+// - The v7 `prisma-client` generator requires an explicit output path.
+// - The connection URL is NOT here anymore; it lives in prisma.config.ts (CLI/migrations)
+//   and is passed to the pg driver adapter at runtime (see src/db.ts).
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// A saved project = one collaborative canvas + its chat (both live in the Yjs blob `state`).
+model Project {
+  id        String   @id @default(cuid())
+  title     String
+  state     Bytes?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

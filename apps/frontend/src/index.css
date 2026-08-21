@@ -1,6 +1,10 @@
 @import "tailwindcss";
 
+/* Enable class-based dark mode (html.dark) for Tailwind v4 `dark:` + shadcn tokens. */
+@custom-variant dark (&:is(.dark *));
+
 :root {
+  /* Existing ArchForge palette tokens (used by hand-styled components). */
   --color-bg-base: #0e0e0e;
   --color-bg-surface: #141414;
   --color-bg-elevated: #1a1a1a;
@@ -13,6 +17,85 @@
   --color-text-faint: #444444;
   --color-accent-ai: #6457f9;
   --color-accent-ai-text: #a89dfc;
+
+  /* shadcn/ui design tokens — light fallback (the app runs in .dark). */
+  --radius: 0.625rem;
+  --background: #ffffff;
+  --foreground: #0e0e0e;
+  --card: #ffffff;
+  --card-foreground: #0e0e0e;
+  --popover: #ffffff;
+  --popover-foreground: #0e0e0e;
+  --primary: #6457f9;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #0e0e0e;
+  --muted: #f4f4f5;
+  --muted-foreground: #6b6b6b;
+  --accent: #f4f4f5;
+  --accent-foreground: #0e0e0e;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.15);
+  --ring: #6457f9;
+}
+
+/* Dark theme = the ArchForge look (this is the default; html has class="dark"). */
+.dark {
+  --background: #0e0e0e;
+  --foreground: #ededed;
+  --card: #141414;
+  --card-foreground: #ededed;
+  --popover: #161616;
+  --popover-foreground: #ededed;
+  --primary: #6457f9;
+  --primary-foreground: #ffffff;
+  --secondary: #1e1e1e;
+  --secondary-foreground: #ededed;
+  --muted: #1a1a1a;
+  --muted-foreground: #a0a0a0;
+  --accent: #222222;
+  --accent-foreground: #ededed;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: #6457f9;
+}
+
+/* Expose shadcn tokens as Tailwind utilities (bg-background, text-foreground, border-border, …). */
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+/* shadcn components rely on a default border color coming from the token. */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
 }
 
 * {
