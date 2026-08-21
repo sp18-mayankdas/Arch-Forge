@@ -2,11 +2,22 @@ import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Bot, Users, Copy, Check, Wifi, WifiOff, TriangleAlert } from "lucide-react";
+import {
+  Bot,
+  Users,
+  Copy,
+  Check,
+  Wifi,
+  WifiOff,
+  TriangleAlert,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { toast } from "sonner";
 import { GhostCanvas } from "@/components/canvas/GhostCanvas";
 import { AiSidebar } from "@/components/AiSidebar";
 import { useYjsSync } from "@/hooks/useYjsSync";
+import { useSidebarWidth } from "@/hooks/useSidebarWidth";
 import { createRoom } from "@/lib/yjs";
 import { applyOps, setPositions, readSemanticGraph, diffToOps } from "@/lib/semantic-ops";
 import { layoutGraph } from "@/lib/layout";
@@ -31,6 +42,9 @@ export function CanvasPage() {
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
+
+  // Drag-to-resize + persisted width for the assistant panel (colleague's feature).
+  const { width: sidebarWidth, dragging, handleProps } = useSidebarWidth();
 
   // The project id IS the Yjs room id (and the server-side persistence key).
   const { doc, provider, messagesArray, user } = useMemo(
@@ -288,8 +302,29 @@ export function CanvasPage() {
           </div>
         )}
 
+        {/* Arrow tab — toggles the assistant; tracks the panel's edge (its width) when open,
+            and stays visible when the panel slides off. Lives outside the panel on purpose. */}
+        <button
+          onClick={() => setSidebarOpen((o) => !o)}
+          title={sidebarOpen ? "Hide assistant" : "Show assistant"}
+          aria-label={sidebarOpen ? "Hide assistant" : "Show assistant"}
+          style={{ right: sidebarOpen ? sidebarWidth : 0 }}
+          className={cn(
+            "absolute top-1/2 z-50 flex h-12 w-5 -translate-y-1/2 items-center justify-center rounded-l-lg border border-r-0 border-white/10 bg-[#141414]/95 text-white/40 backdrop-blur-xl hover:bg-white/10 hover:text-white",
+            dragging ? "transition-colors" : "transition-all duration-200"
+          )}
+        >
+          {sidebarOpen ? (
+            <ChevronRight className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronLeft className="h-3.5 w-3.5" />
+          )}
+        </button>
+
         <AiSidebar
           isOpen={sidebarOpen}
+          width={sidebarWidth}
+          resizeHandleProps={handleProps}
           onClose={() => setSidebarOpen(false)}
           onApplyDesign={handleApplyDesign}
           readGraphForAi={readGraphForAi}
