@@ -5,3 +5,5 @@ dist/
 .DS_Store
 .turbo/
 package-lock.json
+# Prisma generated client
+apps/backend/src/generated/
