@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -12,6 +12,7 @@ import {
   TriangleAlert,
   ChevronLeft,
   ChevronRight,
+  ArrowLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GhostCanvas } from "@/components/canvas/GhostCanvas";
@@ -37,6 +38,7 @@ interface PendingApply {
 
 export function CanvasPage() {
   const { projectId = "" } = useParams();
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copied, setCopied] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -173,9 +175,14 @@ export function CanvasPage() {
       {/* Project chrome (contextual — global nav lives in the sidebar) */}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-4">
         <div className="flex min-w-0 items-center gap-2">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[#6457f9]/15">
-            <Bot className="h-3.5 w-3.5 text-[#a89dfc]" />
-          </div>
+          <button
+            onClick={() => navigate("/projects")}
+            title="Back to projects"
+            aria-label="Back to projects"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/8 hover:text-white"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
           {editingTitle ? (
             <input
               autoFocus
