@@ -1,4 +1,5 @@
 import { API_URL } from "./config";
+import type { UsageResponse } from "@archforge/shared";
 
 // Project metadata as returned by the backend (the Yjs canvas/chat state is NOT here —
 // that syncs over the WebSocket and is persisted server-side).
@@ -49,4 +50,8 @@ export function deleteProject(id: string): Promise<void> {
 // Client-side path for a project's canvas (used with react-router `navigate`).
 export function projectPath(id: string): string {
   return `/project/${encodeURIComponent(id)}`;
+}
+
+export function getUsage(): Promise<UsageResponse> {
+  return fetch(`${API_URL}/api/usage`).then((r) => asJson<UsageResponse>(r));
 }
