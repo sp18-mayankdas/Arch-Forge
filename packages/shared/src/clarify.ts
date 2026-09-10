@@ -74,6 +74,10 @@ export interface AiChatTurn {
 export interface GenerateRequest {
   messages: AiChatTurn[];
   graph: SerializedGraph;
+  /** Attributes this call's token usage to a project for the Usage page. Optional because
+   * the legacy single-turn `{ prompt }` form has no project context; usage simply goes
+   * unrecorded in that case. */
+  projectId?: string;
 }
 
 /**

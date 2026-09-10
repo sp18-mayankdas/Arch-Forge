@@ -13,9 +13,24 @@ datasource db {
 
 // A saved project = one collaborative canvas + its chat (both live in the Yjs blob `state`).
 model Project {
-  id        String   @id @default(cuid())
-  title     String
-  state     Bytes?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String         @id @default(cuid())
+  title        String
+  state        Bytes?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  usageEvents  AiUsageEvent[]
+}
+
+// One row per /api/generate completion — the source of truth for token usage. Recorded
+// regardless of action (reply/ask/generate all spend tokens), independent of the
+// GenerateResponse contract so a DB write can never affect that response's shape.
+model AiUsageEvent {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  promptTokens     Int
+  completionTokens Int
+  totalTokens      Int
+  model            String
+  createdAt        DateTime @default(now())
 }

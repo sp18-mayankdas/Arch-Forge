@@ -25,6 +25,8 @@ const STARTER_CHIPS = [
 
 interface AiSidebarProps {
   isOpen: boolean;
+  /** Attributes this room's generate calls to a project on the Usage page. */
+  projectId: string;
   /** Owned by App, because the arrow tab has to be positioned against the panel from outside
    * it — the tab must stay visible once the panel is translated off-screen. */
   width: number;
@@ -49,6 +51,7 @@ interface AiSidebarProps {
 
 export function AiSidebar({
   isOpen,
+  projectId,
   width,
   resizeHandleProps,
   onClose,
@@ -117,6 +120,7 @@ export function AiSidebar({
           body: JSON.stringify({
             messages: history,
             graph: readGraphForAi(),
+            projectId,
           } satisfies GenerateRequest),
           signal: controller.signal,
         });
@@ -165,7 +169,7 @@ export function AiSidebar({
         scrollToBottom();
       }
     },
-    [messages, isLoading, onApplyDesign, readGraphForAi, scrollToBottom, addMessage]
+    [messages, isLoading, onApplyDesign, readGraphForAi, scrollToBottom, addMessage, projectId]
   );
 
   const handleSend = useCallback(() => {

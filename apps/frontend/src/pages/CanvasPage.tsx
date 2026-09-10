@@ -330,6 +330,7 @@ export function CanvasPage() {
 
         <AiSidebar
           isOpen={sidebarOpen}
+          projectId={projectId}
           width={sidebarWidth}
           resizeHandleProps={handleProps}
           onClose={() => setSidebarOpen(false)}

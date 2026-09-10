@@ -4,6 +4,7 @@ import {
   Bot,
   LayoutDashboard,
   FolderKanban,
+  Gauge,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
@@ -15,6 +16,7 @@ const STORAGE_KEY = "archforge:sidebar-collapsed";
 const NAV = [
   { to: "/", label: "Home", icon: LayoutDashboard, end: true },
   { to: "/projects", label: "Projects", icon: FolderKanban, end: false },
+  { to: "/usage", label: "Usage", icon: Gauge, end: false },
 ] as const;
 
 export function PrivateLayout() {

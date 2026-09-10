@@ -15,6 +15,7 @@ import {
   type GenerateResponse,
 } from "@archforge/shared";
 import { renderObservations } from "../lib/canvas-observations";
+import { prisma } from "../db";
 
 const router = Router();
 
@@ -685,6 +686,16 @@ export function readGraph(body: unknown): SerializedGraph | null {
   };
 }
 
+/**
+ * Which project this call's token usage should be attributed to. Optional and read
+ * defensively like `readGraph` — a missing or malformed value just means usage goes
+ * unrecorded for this call, never a failure of the call itself. Exported for tests.
+ */
+export function readProjectId(body: unknown): string | null {
+  const { projectId } = (body ?? {}) as { projectId?: unknown };
+  return typeof projectId === "string" && projectId.trim() ? projectId.trim() : null;
+}
+
 /** Shared by both transcript readers, so they can never disagree about which turns exist —
  * a silent way for the ask rule to end up reading the wrong turn. */
 function isUsableTurn(m: { content?: unknown } | null | undefined): boolean {
@@ -799,6 +810,26 @@ router.post("/generate", async (req, res) => {
     });
 
     const raw = completion.choices[0]?.message?.content ?? "";
+
+    // Record token usage regardless of action — a "reply" or "ask" turn still spends
+    // tokens. Kept as a side effect outside the GenerateResponse contract on purpose: a
+    // DB write must never affect what the client receives, so failures here only log.
+    const projectId = readProjectId(req.body);
+    if (projectId && completion.usage) {
+      try {
+        await prisma.aiUsageEvent.create({
+          data: {
+            projectId,
+            promptTokens: completion.usage.prompt_tokens,
+            completionTokens: completion.usage.completion_tokens,
+            totalTokens: completion.usage.total_tokens,
+            model: MODEL,
+          },
+        });
+      } catch (err) {
+        console.error("AI generate: failed to record token usage:", err);
+      }
+    }
 
     let design: AiDesign;
     try {
