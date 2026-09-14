@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import {
   Bot,
@@ -7,8 +7,9 @@ import {
   Gauge,
   PanelLeftClose,
   PanelLeftOpen,
+  LogOut,
 } from "lucide-react";
-import { getUserInfo } from "@/lib/yjs";
+import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
 const STORAGE_KEY = "archforge:sidebar-collapsed";
@@ -24,7 +25,7 @@ export function PrivateLayout() {
   const [collapsed, setCollapsed] = useState<boolean>(
     () => localStorage.getItem(STORAGE_KEY) === "1"
   );
-  const user = useMemo(() => getUserInfo(), []);
+  const { user, signOut } = useAuth();
 
   const toggle = useCallback(() => {
     setCollapsed((c) => {
@@ -105,26 +106,43 @@ export function PrivateLayout() {
           ))}
         </nav>
 
-        {/* Footer: current user */}
+        {/* Footer: the signed-in GitHub account, with sign-out */}
         <div className="border-t border-border p-2">
           <div
             className={cn(
               "flex items-center gap-2.5 rounded-lg px-2 py-1.5",
               collapsed && "justify-center px-0"
             )}
-            title={collapsed ? user.name : undefined}
+            title={collapsed ? (user?.name ?? user?.login ?? undefined) : undefined}
           >
-            <div
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white select-none"
-              style={{ background: user.color }}
-            >
-              {user.name[0].toUpperCase()}
-            </div>
-            {!collapsed && (
-              <div className="min-w-0">
-                <p className="truncate text-xs font-medium text-white/80">{user.name}</p>
-                <p className="text-[10px] text-white/35">You</p>
+            {user?.avatarUrl ? (
+              <img
+                src={user.avatarUrl}
+                alt=""
+                className="h-7 w-7 shrink-0 rounded-full object-cover"
+              />
+            ) : (
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#6457f9]/25 text-[11px] font-bold text-white select-none">
+                {(user?.name ?? user?.login ?? "?")[0]?.toUpperCase()}
               </div>
+            )}
+            {!collapsed && (
+              <>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-white/80">
+                    {user?.name ?? user?.login}
+                  </p>
+                  <p className="truncate text-[10px] text-white/35">@{user?.login}</p>
+                </div>
+                <button
+                  onClick={() => void signOut()}
+                  title="Sign out"
+                  aria-label="Sign out"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white/40 transition-colors hover:bg-white/8 hover:text-white"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </button>
+              </>
             )}
           </div>
         </div>

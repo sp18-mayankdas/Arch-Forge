@@ -9,6 +9,16 @@ import type { UsageResponse } from "@archforge/shared";
 const groupBy = vi.fn();
 const findMany = vi.fn();
 
+// `/api/usage` is behind requireAuth now. Stubbed here so these stay tests of the route's
+// aggregation and scoping, not of the session machinery (that is covered in access.test.ts).
+const TEST_USER = { id: "u-test", login: "tester", emailDomain: "acme.com" };
+vi.mock("../middleware/auth", () => ({
+  requireAuth: (req: { user?: unknown }, _res: unknown, next: () => void) => {
+    req.user = TEST_USER;
+    next();
+  },
+}));
+
 vi.mock("../db", () => ({
   prisma: {
     aiUsageEvent: { groupBy: (...args: unknown[]) => groupBy(...args) },
@@ -77,17 +87,38 @@ describe("GET /api/usage", () => {
     expect(body.projects).toEqual([]);
   });
 
-  it("falls back to a placeholder title if a project row is missing", async () => {
-    // Defensive path only — AiUsageEvent cascades on project delete, so this should not
-    // happen in practice, but the aggregation must not crash if it ever does.
+  it("aggregates ONLY over projects the caller can see", async () => {
+    // The leak this page used to have: it grouped over every event in the database, so the
+    // overview summed other people's tokens. Scoping now happens first, and the aggregate
+    // query must be constrained to the visible ids rather than filtered afterwards.
+    findMany.mockResolvedValue([{ id: "mine", title: "Mine" }]);
     groupBy.mockResolvedValue([
-      { projectId: "gone", _sum: { promptTokens: 5, completionTokens: 5, totalTokens: 10 }, _count: 1 },
+      { projectId: "mine", _sum: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }, _count: 1 },
     ]);
+
+    const res = await fetch(url);
+    const body = (await res.json()) as UsageResponse;
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ OR: expect.any(Array) }) })
+    );
+    expect(groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { projectId: { in: ["mine"] } } })
+    );
+    expect(body.projects.map((p) => p.projectId)).toEqual(["mine"]);
+    expect(body.overview.totalTokens).toBe(15);
+  });
+
+  it("skips the aggregate query entirely when the caller has no projects", async () => {
     findMany.mockResolvedValue([]);
 
     const res = await fetch(url);
     const body = (await res.json()) as UsageResponse;
 
-    expect(body.projects[0]).toMatchObject({ projectId: "gone", title: "Deleted project" });
+    // `in: []` matches nothing, so the round-trip is pure waste — but more importantly an
+    // unconstrained groupBy here would be the leak again.
+    expect(groupBy).not.toHaveBeenCalled();
+    expect(body.projects).toEqual([]);
+    expect(body.overview.totalTokens).toBe(0);
   });
 });

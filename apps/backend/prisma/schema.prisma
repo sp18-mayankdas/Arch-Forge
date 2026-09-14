@@ -11,14 +11,72 @@ datasource db {
   provider = "postgresql"
 }
 
+// Who may open a project's canvas. The room id IS the project id, and the Yjs WebSocket
+// upgrade is guarded by the same check as the REST routes (see src/lib/access.ts) — an
+// unguarded socket would make every REST check cosmetic, since the canvas flows over it.
+enum ProjectAccess {
+  INVITE_ONLY // the owner plus explicitly invited GitHub logins
+  SAME_DOMAIN // anyone whose verified email domain matches the OWNER's
+  LINK        // any signed-in user who has the URL
+}
+
+// A GitHub-authenticated person.
+model User {
+  id    String @id @default(cuid())
+  // The numeric GitHub id, not the login: logins can be renamed and reused, so this is the
+  // only stable join key. Stored as a string because Prisma has no unsigned 64-bit int.
+  githubId String @unique
+  // Lowercased — GitHub logins are case-insensitive, and invites match on this column, so
+  // normalising on write is what makes `ProjectMember.githubLogin` lookups reliable.
+  login       String  @unique
+  name        String?
+  avatarUrl   String?
+  // The PRIMARY VERIFIED email, or null when the user keeps it private / unverified.
+  email       String?
+  // Derived from `email` on sign-in. Null is load-bearing: it can never satisfy SAME_DOMAIN,
+  // so the check fails closed rather than matching everyone with no domain.
+  emailDomain String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects    Project[]
+  memberships ProjectMember[]
+
+  @@index([emailDomain])
+}
+
 // A saved project = one collaborative canvas + its chat (both live in the Yjs blob `state`).
 model Project {
-  id           String         @id @default(cuid())
-  title        String
-  state        Bytes?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  usageEvents  AiUsageEvent[]
+  id          String        @id @default(cuid())
+  title       String
+  state       Bytes?
+  access      ProjectAccess @default(INVITE_ONLY)
+  ownerId     String
+  owner       User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  usageEvents AiUsageEvent[]
+  members     ProjectMember[]
+
+  @@index([ownerId])
+}
+
+// An invitation, keyed by GitHub LOGIN rather than by user id, so an owner can invite a
+// colleague who has never opened ArchForge. `userId` is filled in at that person's first
+// sign-in, which makes a pending invite and an accepted one the same row — no second table
+// to reconcile, and no window where an invite exists but cannot be matched.
+model ProjectMember {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  githubLogin String   // lowercased, like User.login
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@unique([projectId, githubLogin])
+  @@index([userId])
 }
 
 // One row per /api/generate completion — the source of truth for token usage. Recorded

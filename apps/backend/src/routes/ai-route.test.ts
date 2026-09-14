@@ -21,6 +21,16 @@ const create = vi.fn(async (_params: unknown) => ({
   choices: [{ message: { role: "assistant", content: nextContent } }],
 }));
 
+// `/api/generate` is behind requireAuth now. Stubbed so these stay tests of the route's
+// prompt/validation behaviour rather than of the session machinery.
+const TEST_USER = { id: "u-test", login: "tester", emailDomain: "acme.com" };
+vi.mock("../middleware/auth", () => ({
+  requireAuth: (req: { user?: unknown }, _res: unknown, next: () => void) => {
+    req.user = TEST_USER;
+    next();
+  },
+}));
+
 vi.mock("openai", () => {
   class MockOpenAI {
     chat = { completions: { create } };

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import express from "express";
 import http from "http";
 import type { AddressInfo } from "net";
@@ -17,6 +17,16 @@ const create = vi.fn(async () => ({
   usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
 }));
 
+// `/api/generate` is behind requireAuth now. Stubbed so these stay tests of the route's
+// prompt/validation behaviour rather than of the session machinery.
+const TEST_USER = { id: "u-test", login: "tester", emailDomain: "acme.com" };
+vi.mock("../middleware/auth", () => ({
+  requireAuth: (req: { user?: unknown }, _res: unknown, next: () => void) => {
+    req.user = TEST_USER;
+    next();
+  },
+}));
+
 vi.mock("openai", () => {
   class MockOpenAI {
     chat = { completions: { create } };
@@ -25,11 +35,28 @@ vi.mock("openai", () => {
 });
 
 const usageCreate = vi.fn();
+// `project.findUnique` is here because attribution is now CHECKED before it is recorded:
+// resolveProjectAccess has to confirm the caller can actually see the project they are
+// billing. Returning an owned project keeps these tests about the recording itself.
+const { projectFindUnique } = vi.hoisted(() => ({ projectFindUnique: vi.fn() }));
 vi.mock("../db", () => ({
-  prisma: { aiUsageEvent: { create: usageCreate } },
+  prisma: {
+    aiUsageEvent: { create: usageCreate },
+    project: { findUnique: projectFindUnique },
+  },
 }));
 
+/** An owned project — the caller may attribute usage to it. */
+const OWNED = {
+  ownerId: "u-test",
+  access: "INVITE_ONLY",
+  owner: { emailDomain: "acme.com" },
+  members: [],
+};
+
 describe("POST /api/generate — token usage recording", () => {
+  beforeEach(() => projectFindUnique.mockResolvedValue(OWNED));
+
   let server: http.Server;
   let url: string;
 
@@ -103,6 +130,20 @@ describe("POST /api/generate — token usage recording", () => {
 
     await post(body());
 
+    expect(usageCreate).not.toHaveBeenCalled();
+  });
+
+  it("refuses to record usage against a project the caller cannot see", async () => {
+    // Attribution is client-supplied, so without this check a caller could bill their tokens
+    // to someone else's project — inflating a number they are not even allowed to read.
+    usageCreate.mockReset();
+    projectFindUnique.mockResolvedValue(null);
+    nextContent = JSON.stringify({ action: "reply", nodes: [], edges: [], summary: "ok" });
+
+    const result = await post(body("someone-elses-project"));
+
+    // The generation itself still succeeds — attribution is a side effect, never a gate.
+    expect(result.summary).toBe("ok");
     expect(usageCreate).not.toHaveBeenCalled();
   });
 });

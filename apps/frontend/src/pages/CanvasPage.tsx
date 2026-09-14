@@ -5,8 +5,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
   Users,
-  Copy,
-  Check,
+  Share2,
+  Lock,
   Wifi,
   WifiOff,
   TriangleAlert,
@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { GhostCanvas } from "@/components/canvas/GhostCanvas";
 import { AiSidebar } from "@/components/AiSidebar";
+import { ShareDialog } from "@/components/ShareDialog";
 import { useYjsSync } from "@/hooks/useYjsSync";
 import { useSidebarWidth } from "@/hooks/useSidebarWidth";
 import { useFocus } from "@/hooks/useFocus";
@@ -27,7 +28,8 @@ import { groupPeerFocus, peerFocusKey, resolveFocus } from "@/lib/focus";
 import { serializeGraph } from "@/types/canvas";
 import type { CanvasNode, SemanticNode, SemanticEdge } from "@/types/canvas";
 import type { NodeChange } from "@xyflow/react";
-import { getProject, updateProject } from "@/lib/api";
+import { getProject, updateProject, ApiError } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
 const REMOVAL_CONFIRM_RATIO = 1 / 3;
@@ -43,17 +45,23 @@ export function CanvasPage() {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [copied, setCopied] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
+  const [accessDenied, setAccessDenied] = useState(false);
 
   // Drag-to-resize + persisted width for the assistant panel (colleague's feature).
   const { width: sidebarWidth, dragging, handleProps } = useSidebarWidth();
 
+  // RequireAuth guarantees a user here — this page cannot render signed out.
+  const { user: account } = useAuth();
+
   // The project id IS the Yjs room id (and the server-side persistence key).
   const { doc, provider, messagesArray, user } = useMemo(
-    () => createRoom(projectId),
+    () => createRoom(projectId, { login: account!.login, name: account!.name }),
+    // `account` is deliberately not a dependency: rooms are cached for the page's lifetime,
+    // and re-running this on a profile refetch would hand back the same cached room anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [projectId]
   );
 
@@ -166,7 +174,30 @@ export function CanvasPage() {
     provider.connect();
     setConnected(provider.wsconnected);
     setSynced(provider.synced);
-    const onStatus = ({ status }: { status: string }) => setConnected(status === "connected");
+
+    // The server now refuses the upgrade (401/403) for anyone without access, and
+    // WebsocketProvider retries forever on close — so a user who cannot open this board would
+    // sit in a silent reconnect loop behind a blank canvas. `getProject` runs the same access
+    // check over HTTP, where a rejection has a readable status, so let it be the one that
+    // speaks: if it 404s, stop reconnecting and say so.
+    let attempts = 0;
+    const onStatus = ({ status }: { status: string }) => {
+      setConnected(status === "connected");
+      if (status === "connected") {
+        attempts = 0;
+        return;
+      }
+      // Only after several failures, so an ordinary blip is not reported as a permission
+      // problem — reconnecting is normal and usually succeeds.
+      if (status === "disconnected" && ++attempts === 4) {
+        void getProject(projectId).catch((err) => {
+          if (err instanceof ApiError && (err.status === 404 || err.status === 401)) {
+            provider.disconnect();
+            setAccessDenied(true);
+          }
+        });
+      }
+    };
     const onSync = (isSynced: boolean) => setSynced(isSynced);
     provider.on("status", onStatus);
     provider.on("sync", onSync);
@@ -175,7 +206,7 @@ export function CanvasPage() {
       provider.off("sync", onSync);
       provider.disconnect();
     };
-  }, [provider]);
+  }, [provider, projectId]);
 
   const readGraphForAi = useCallback(() => {
     const { nodes: n, edges: e, version } = readSemanticGraph(doc);
@@ -211,14 +242,26 @@ export function CanvasPage() {
     [doc, writeDesign]
   );
 
-  const handleCopyLink = useCallback(async () => {
-    await navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    toast.success("Link copied — share it to collaborate live");
-    setTimeout(() => setCopied(false), 2000);
-  }, []);
-
   const onlineCount = collaborators.length + 1;
+
+  if (accessDenied) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <Lock className="h-7 w-7 text-white/25" />
+        <p className="text-sm font-medium text-white/80">You don’t have access to this canvas</p>
+        <p className="max-w-sm text-xs text-white/40">
+          Ask its owner to invite your GitHub account, or to change who the board is shared
+          with.
+        </p>
+        <button
+          onClick={() => navigate("/projects")}
+          className="mt-1 flex h-8 items-center rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white/70 hover:bg-white/8 hover:text-white"
+        >
+          Back to projects
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -298,13 +341,14 @@ export function CanvasPage() {
             </div>
           </div>
 
-          <button
-            onClick={handleCopyLink}
-            className="flex h-7 items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white/60 transition-all hover:bg-white/8 hover:text-white"
-          >
-            {copied ? <Check className="h-3 w-3 text-green-400" /> : <Copy className="h-3 w-3" />}
-            {copied ? "Copied!" : "Share"}
-          </button>
+          {/* Copying the URL is no longer the whole story — who may open it is now a choice,
+              so the button opens the access dialog and copying lives inside it. */}
+          <ShareDialog projectId={projectId}>
+            <button className="flex h-7 items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white/60 transition-all hover:bg-white/8 hover:text-white">
+              <Share2 className="h-3 w-3" />
+              Share
+            </button>
+          </ShareDialog>
 
           <button
             onClick={() => setSidebarOpen((o) => !o)}

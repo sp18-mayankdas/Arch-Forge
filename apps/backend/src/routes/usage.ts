@@ -1,22 +1,34 @@
 import { Router } from "express";
 import { prisma } from "../db";
 import type { UsageResponse, UsageTotals } from "@archforge/shared";
+import { visibleProjectsWhere } from "../lib/access";
+import { requireAuth } from "../middleware/auth";
 
 const router = Router();
 
+router.use(requireAuth);
+
 // GET /api/usage — token usage source of truth: totals across every project, plus a
 // per-project breakdown, sorted by heaviest usage first.
-router.get("/usage", async (_req, res) => {
-  const grouped = await prisma.aiUsageEvent.groupBy({
-    by: ["projectId"],
-    _sum: { promptTokens: true, completionTokens: true, totalTokens: true },
-    _count: true,
-  });
-
-  const projects = await prisma.project.findMany({
-    where: { id: { in: grouped.map((g) => g.projectId) } },
+router.get("/usage", async (req, res) => {
+  // Scope FIRST, then aggregate. Grouping over every event and filtering afterwards would
+  // still have summed other people's tokens into `overview` — the leak this page had.
+  const visible = await prisma.project.findMany({
+    where: visibleProjectsWhere(req.user!),
     select: { id: true, title: true },
   });
+  const visibleIds = visible.map((p) => p.id);
+
+  const grouped = visibleIds.length
+    ? await prisma.aiUsageEvent.groupBy({
+        by: ["projectId"],
+        where: { projectId: { in: visibleIds } },
+        _sum: { promptTokens: true, completionTokens: true, totalTokens: true },
+        _count: true,
+      })
+    : [];
+
+  const projects = visible;
   const titleById = new Map(projects.map((p) => [p.id, p.title]));
 
   const overview: UsageTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0, callCount: 0 };

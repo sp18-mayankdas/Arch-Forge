@@ -17,8 +17,13 @@ import {
 } from "@archforge/shared";
 import { renderObservations } from "../lib/canvas-observations";
 import { prisma } from "../db";
+import { resolveProjectAccess } from "../lib/access";
+import { requireAuth } from "../middleware/auth";
 
 const router = Router();
+
+// Generating costs tokens and writes to a shared canvas; both need a known caller.
+router.use(requireAuth);
 
 // Provider switch via AI_PROVIDER:
 //   "azure"   -> Azure OpenAI (AZURE_OPENAI_*)
@@ -957,7 +962,12 @@ router.post("/generate", async (req, res) => {
     // tokens. Kept as a side effect outside the GenerateResponse contract on purpose: a
     // DB write must never affect what the client receives, so failures here only log.
     const projectId = readProjectId(req.body);
-    if (projectId && completion.usage) {
+    // Attribution is CHECKED, not trusted. `readProjectId` reads an arbitrary client-supplied
+    // string, so without this a caller could bill their tokens to someone else's project — and
+    // inflate a number they cannot even see.
+    const canAttribute =
+      projectId !== null && (await resolveProjectAccess(req.user!, projectId)) !== null;
+    if (projectId && canAttribute && completion.usage) {
       try {
         await prisma.aiUsageEvent.create({
           data: {

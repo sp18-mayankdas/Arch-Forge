@@ -10,7 +10,7 @@ canvas with live presence cursors. The model is provider-agnostic (see **AI gene
 ```
 archforge/
 ├── apps/
-│   ├── frontend/   @archforge/frontend  — Vite + React 18 + TS + TailwindCSS v4 + React Flow + Yjs (port 5173)
+│   ├── frontend/   @archforge/frontend  — Vite + React 18 + TS + TailwindCSS v4 + React Flow + Yjs (port 3000)
 │   └── backend/    @archforge/backend   — Express + y-websocket + `openai` SDK (port 3001)
 └── packages/
     └── shared/     @archforge/shared    — shared TS types & constants (consumed as RAW TS, no build)
@@ -21,7 +21,7 @@ archforge/
 | Command                                      | What it does                                              |
 | -------------------------------------------- | --------------------------------------------------------- |
 | `pnpm install`                               | Install everything for all packages (one command)         |
-| `pnpm dev`                                   | Turbo runs frontend (:5173) + backend (:3001) in parallel |
+| `pnpm dev`                                   | Turbo runs frontend (:3000) + backend (:3001) in parallel |
 | `pnpm dev:frontend` / `pnpm dev:backend`     | Run just one app                                          |
 | `pnpm build`                                 | Build all (see backend caveat below)                      |
 | `pnpm type-check`                            | `tsc --noEmit` across all three packages                  |
@@ -152,6 +152,75 @@ complicated, simplify it" made the diagram *bigger*, because the model designed 
   leaving disconnected boxes. `validateDesign` now also accepts either spelling as defence in depth.
 - The prompt must insist edges are re-stated too — they are deleted by omission exactly like nodes,
   and a model told only to think about nodes will silently return a graph with none.
+
+### Auth and per-project access — the WebSocket is the real boundary
+
+Sign-in is GitHub OAuth, and **every route and every Yjs socket requires a session.** There is
+no anonymous path, because an access level you can sidestep by not signing in is not an access
+level. A project has one of three levels (`packages/shared/src/auth.ts`, mirrored by the Prisma
+`ProjectAccess` enum): `INVITE_ONLY` (default), `SAME_DOMAIN`, `LINK`.
+
+- **`apps/backend/src/lib/access.ts` `resolveProjectAccess()` is the only authorization
+  decision**, called by BOTH the Express middleware and the WS upgrade handler. That is the
+  point of it being a function: the canvas data flows over the socket, so if the two checks
+  ever disagreed the REST rules would be decoration. Returns a role or `null`; `null` is the
+  denial and includes "no such project".
+- **The membership check runs BEFORE the access-level switch.** An explicit invite must survive
+  the owner later switching the project to `SAME_DOMAIN` — losing access you were personally
+  granted because someone changed an unrelated setting is a bug from the user's side.
+- **A null `emailDomain` fails closed.** A GitHub account with no primary *verified* email has
+  no domain, and `null === null` must never read as "same domain" — that would turn the level
+  into "anyone without a verified email". The Share dialog disables the option with a reason
+  rather than letting an owner pick a level that locks out everyone including themselves.
+- **`visibleProjectsWhere()` deliberately omits `LINK`.** "Anyone with the link" means having
+  the URL; listing every link-shared project to every signed-in user would quietly promote that
+  level to "public". It is a separate query from `resolveProjectAccess` on purpose — a list view
+  cannot afford a per-row function call.
+- **`roomIdFromUrl()` (`lib/rooms.ts`) is the single definition of a room name**, and
+  `setupWSConnection` is handed the result explicitly as `docName`. y-websocket otherwise
+  re-derives it internally from the URL; if the guard computed it even slightly differently we
+  would authorize one room and open another — an access check that looks like it is working.
+  `lib/rooms.test.ts` pins the two against each other.
+- **Access changes call `evictRoom()`**, because narrowing access leaves the people who just
+  lost it holding open sockets. It drops *everyone* in the room and lets survivors reconnect and
+  re-pass the check — blunt, but closing only the losers means mapping sockets to users, and a
+  mistake there leaks the document.
+- **Members are keyed by GitHub `login`, not user id** (`ProjectMember.userId` is nullable), so
+  an owner can invite someone who has never opened ArchForge. The row is claimed on that
+  person's first sign-in, which is why there is no separate invite table. `login` is lowercased
+  everywhere and refreshed on every sign-in, since GitHub logins can be renamed.
+- Usage attribution is **checked**, not trusted: `readProjectId` reads an arbitrary client
+  string, so `/api/generate` confirms the caller can see that project before recording — it is a
+  side effect, never a gate, so a failed check costs the row and not the generation.
+
+### Sessions are a cookie because of the socket
+
+`apps/backend/src/lib/session.ts` issues a signed JWT in an **httpOnly cookie**, and that choice
+is forced by Yjs rather than by the REST API: a browser cannot set an `Authorization` header when
+constructing a `WebSocket`, and y-websocket discards the query string when deriving the room
+name, so `?token=` would both be awkward and leak the credential into every access log. A cookie
+is the one credential the browser attaches to the upgrade by itself, readable as
+`req.headers.cookie` inside `server.on("upgrade")`.
+
+- The token carries **identity only** (`uid`). Every authorization decision is a fresh DB read,
+  so revoking access takes effect on the next request regardless of token lifetime — the usual
+  "stale JWT" objection does not apply. `login` and `emailDomain` are read from the DB for the
+  same reason: baked into a week-old token they would keep granting access after a rename.
+- **A missing `SESSION_SECRET` throws.** The AI client is lazy for the opposite reason (a missing
+  key should surface as one 500, not a boot crash); here a fallback secret would mint forgeable
+  tokens, so refusing to start is the safe failure.
+- **The frontend must stay same-origin through the Vite proxy.** Setting `VITE_API_URL`/
+  `VITE_WS_URL` to `http://localhost:3001` bypasses it, the cookie is never sent, and everything
+  reads as signed out — which is why those lines are commented out in `apps/frontend/.env`.
+  `cors({ origin: "*" })` is gone too: the browser refuses wildcard plus credentials.
+- `lib/api.ts` has ONE `request()` helper carrying `credentials: "include"`. `fetch` does not
+  send cookies cross-origin by default, and a single call that forgets reads as "signed out" for
+  no visible reason.
+- `RequireAuth` is convenience, not security — it exists so a signed-out user is not shown an
+  empty canvas that silently fails to sync. The server rejects on its own.
+- Presence identity (`lib/yjs.ts getUserInfo`) is now the GitHub account, with a colour hashed
+  from the login so a person is the same colour everywhere. `userId` still identifies a TAB, not
+  an account: two tabs on one board are two cursors, and sharing an id would collapse them.
 
 ### Focus — scoping a prompt to marked nodes
 
@@ -321,8 +390,13 @@ an ordinary user turn, so the transcript stays readable and the model needs no s
   - `openai`: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` (all required; no defaults).
     Plus optional `PORT` (default 3001). See `apps/backend/.env.example`. Restart the backend after editing
     `.env` (dotenv reads once at startup).
-- **Frontend needs no env for local dev** — defaults are baked in. Set `apps/frontend/.env`
-  (`VITE_API_URL`, `VITE_WS_URL`) only to target a remote backend (staging/prod; use `wss://` behind TLS).
+- **Auth also needs `DATABASE_URL`, `SESSION_SECRET`, `APP_ORIGIN` and the `GITHUB_*` OAuth trio.**
+  Register the OAuth app with the callback on the FRONTEND origin
+  (`http://localhost:3000/api/auth/github/callback`) — Vite proxies `/api`, and the cookie only
+  comes back to the app if it was set on the origin the browser is using.
+- **Frontend needs no env for local dev, and must not have one for `VITE_API_URL`/`VITE_WS_URL`.**
+  Those bypass the Vite proxy, which breaks the session cookie (see above). Set them only for a
+  real split deployment, where CORS and a `Secure`+`SameSite=None` cookie must be configured too.
 - All `.env` files are gitignored. Never commit secrets.
 
 ## Dev gotchas
