@@ -128,6 +128,11 @@ export function useYjsSync({ doc, messagesArray, awareness }: UseYjsSyncProps) {
             name: user.name ?? "Anonymous",
             color: user.color ?? "#ffffff",
             cursor: (s.cursor as { x: number; y: number } | null) ?? null,
+            // Read defensively like the rest of this mapper: a peer on a bundle that predates
+            // the field simply has no `focus` key and reads as unmarked.
+            focus: Array.isArray(s.focus)
+              ? (s.focus as unknown[]).filter((x): x is string => typeof x === "string")
+              : [],
           };
         });
       setCollaborators(states);

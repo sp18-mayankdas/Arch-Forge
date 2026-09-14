@@ -25,6 +25,13 @@ describe("serializeGraph", () => {
     }
   });
 
+  it("carries no focus either — the graph is shared, focus is one viewer's intent", () => {
+    const dirty = [{ id: "a", type: "service", label: "A", focus: true, selected: true }] as never;
+    const json = JSON.stringify(serializeGraph(dirty, [], 1));
+    expect(json).not.toContain('"focus"');
+    expect(json).not.toContain('"selected"');
+  });
+
   it("omits edge label when absent", () => {
     const out = serializeGraph([], [{ id: "e", source: "a", target: "b" }], 0);
     expect(out.edges[0]).toEqual({ id: "e", f: "a", to: "b" });

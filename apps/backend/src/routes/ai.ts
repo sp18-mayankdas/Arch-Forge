@@ -13,6 +13,7 @@ import {
   type SerializedGraph,
   type Suggestion,
   type GenerateResponse,
+  type FocusSelection,
 } from "@archforge/shared";
 import { renderObservations } from "../lib/canvas-observations";
 import { prisma } from "../db";
@@ -109,9 +110,24 @@ export const MAX_SUGGESTIONS = 3;
 const MAX_SUGGESTION_LABEL = 90;
 const MAX_SUGGESTION_RATIONALE = 160;
 
+/**
+ * The most marked nodes one turn may carry. Two reasons, both real:
+ *
+ * Prompt budget is a live constraint here — see MAX_COMPLETION_TOKENS above, which exists
+ * because a provider reserved `prompt + max_tokens` up front and 413'd. An uncapped focus
+ * list is unbounded prompt growth on exactly that axis.
+ *
+ * And semantically, 12 is the top of the "a simple system gets 5-12 nodes" band in STEP 4: a
+ * focus at the cap is already a whole small system's worth of attention. Past that the user
+ * means "the whole diagram", which an unfocused turn already says. Clamped rather than
+ * rejected, like every other cap here. Exported for tests.
+ */
+export const MAX_FOCUS_NODES = 12;
+
 export function buildSystemPrompt(
   allowClarify: boolean,
   graph: SerializedGraph | null,
+  focusIds: string[] = [],
 ): string {
   // One line, not fifteen: "sql_db → SQL Database" teaches nothing a reader of the enum
   // cannot infer, and the prompt has better uses for those tokens.
@@ -155,6 +171,68 @@ The canvas is replaced by what you return, so:
   // is what turns "be insightful" into "read this and phrase it" — and it is why suggestions
   // and trade-offs come out specific to this canvas instead of generic advice.
   const observations = renderObservations(graph);
+
+  // The nodes the user has marked. Resolved HERE rather than trusted from the caller: readFocus
+  // already guarantees these exist, but a builder that looks them up itself cannot be handed a
+  // phantom id by some future caller, and the same lookup gives us the labels to render.
+  const focusNodes = graph
+    ? focusIds
+        .map((id) => graph.nodes.find((n) => n.id === id))
+        .filter((n): n is SerializedGraph["nodes"][number] => Boolean(n))
+    : [];
+
+  const focusCount = focusNodes.length;
+  const these = focusCount === 1 ? "this node" : "these nodes";
+  const them = focusCount === 1 ? "it" : "them";
+
+  // Gated on allowClarify, and that gate is NOT optional. When asking is disallowed the ask
+  // option is absent from the prompt, never merely discouraged (see `decision` below) — focus
+  // text saying "if you must ask…" would reintroduce it through a side door, slipping past the
+  // literal assertions that pin the no-ask branch while breaking the principle they protect.
+  const focusAsk = allowClarify
+    ? `
+If a fact you would otherwise have to INVENT about ${these} is still unknown, ask — but ask only
+about ${these}. Selecting something is not an answer to the checklist; it only says which part of
+the system the checklist runs over.
+- "make this resilient", 2 nodes selected → ask, about the selected nodes only: whether the work
+  can safely be retried decides whether a queue appears between them.
+- "rename this to Billing", 1 node selected → generate. The selection names the component and the
+  message names the action, so nothing is left open.`
+    : "";
+
+  // Rendered as prose bullets, NEVER as JSON. The canvas block above deliberately uses the key
+  // names the model must output, because models mirror what they are shown — and here that same
+  // law runs the other way. A JSON focus array with id/type/label keys would put a SECOND,
+  // SHORTER node array in context, and the model will sometimes echo that one back as its
+  // "nodes". Since anything omitted is deleted, that is a direct canvas wipe. A bulleted list is
+  // structurally impossible to mirror into the answer shape. No edges and no neighbour expansion
+  // either — the neighbours are already in CURRENT CANVAS, and rebuilding a miniature graph here
+  // is the same hazard again.
+  const focus =
+    focusCount === 0 || !graph
+      ? ""
+      : `
+${focusCount === 1 ? "FOCUSED NODE" : "FOCUSED NODES"} — the user has selected ${focusCount} of the ${graph.nodes.length} nodes on the canvas, and this
+turn is about ${them}:
+${focusNodes.map((f) => `- ${f.id} — "${f.l || f.id}" (${f.t})`).join("\n")}
+
+READ THE MESSAGE AGAINST ${focusCount === 1 ? "THIS NODE" : "THESE NODES"}. Anything vague in it — "this", "it", "here", "the
+service" — refers to one of ${them}. Judge, explain and change ${these} first. Touching a neighbour is
+fine when the change genuinely requires it: the selection says where to LOOK, not where you are
+allowed to edit.
+
+IT DOES NOT CHANGE WHAT YOU RETURN. You still return the COMPLETE canvas — every node and every
+edge in CURRENT CANVAS, selected or not, ids byte-identical. Returning only the selected ${
+          focusCount === 1 ? "node" : "nodes"
+        }
+DELETES everything else, live, for everyone in the room. In your AUDIT line "nodes-after" still
+counts the WHOLE canvas: unless the user asked for something smaller, it must not be lower than
+"nodes-now".
+
+Scope your JUDGEMENT the same way. Run the REQUIREMENT CHECKLIST against this change only. Name
+${these} in "summary" and in "tradeoff". Take your suggestions from ${these} or their immediate
+neighbours. CANVAS OBSERVATIONS above covers the whole diagram — use the ones that involve ${these}
+and leave the rest for another turn; do not review the parts of the design nobody asked about.${focusAsk}`;
 
   // When asking is disallowed the ask option is ABSENT from the prompt, not merely
   // discouraged — the model's helpfulness prior beats soft discouragement, which is the
@@ -293,6 +371,7 @@ the client derives all of those from the node type. Do not emit them.
 
 ${canvas}
 ${observations}
+${focus}
 
 STEP 1 — THINK FIRST, in the "thinking" field, before anything else.
 A few sentences of plain prose, then one AUDIT line. In the prose:
@@ -696,6 +775,63 @@ export function readProjectId(body: unknown): string | null {
   return typeof projectId === "string" && projectId.trim() ? projectId.trim() : null;
 }
 
+/**
+ * Which of the user's marked nodes actually exist. Untrusted like everything else on the wire,
+ * and validated against THE SAME graph the prompt renders — a focus id naming a node the model
+ * cannot see is worse than no focus at all, because it invites the model to invent that node's
+ * identity, and a new id for an existing component deletes it and adds a stranger in its place.
+ * Taking `graph` as a parameter rather than re-reading the body is what makes the two impossible
+ * to disagree, the same trick `isUsableTurn` plays for the transcript readers.
+ *
+ * Returns a plain array, never null: "no focus was sent" and "every id sent is stale" must
+ * produce the identical prompt, so they get the identical value. The canvas is shared and live —
+ * another user deleting your selection mid-request is normal operation, not a 400.
+ *
+ * Exported for tests.
+ */
+export function readFocus(body: unknown, graph: SerializedGraph | null): string[] {
+  if (!graph) return [];
+
+  const { focus } = (body ?? {}) as { focus?: Partial<FocusSelection> };
+  if (!focus || !Array.isArray(focus.nodeIds)) return [];
+
+  const known = new Set(graph.nodes.map((n) => n.id));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let dropped = 0;
+
+  for (const id of focus.nodeIds) {
+    // Deliberately no trimming and no normalising: ids are compared byte-identically
+    // everywhere else in this pipeline, so a padded id is a DIFFERENT id and belongs in the
+    // dropped pile rather than being silently repaired into a match.
+    if (typeof id !== "string" || id === "") {
+      dropped++;
+      continue;
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (!known.has(id)) {
+      dropped++;
+      continue;
+    }
+    // Clamp rather than reject the whole focus: truncating still scopes the turn correctly and
+    // the rest stay visible in CURRENT CANVAS, whereas dropping it would silently un-scope a
+    // request the user explicitly scoped. Same contract as validateQuestions/validateSuggestions.
+    if (out.length >= MAX_FOCUS_NODES) {
+      dropped++;
+      continue;
+    }
+    out.push(id);
+  }
+
+  if (dropped > 0) {
+    console.warn(
+      `AI generate: ignoring ${dropped} focus id(s) — unknown, malformed, or over the cap of ${MAX_FOCUS_NODES}.`,
+    );
+  }
+  return out;
+}
+
 /** Shared by both transcript readers, so they can never disagree about which turns exist —
  * a silent way for the ask rule to end up reading the wrong turn. */
 function isUsableTurn(m: { content?: unknown } | null | undefined): boolean {
@@ -783,6 +919,12 @@ router.post("/generate", async (req, res) => {
 
     const graph = readGraph(req.body);
 
+    // Which nodes the user marked, scoping this turn to part of the diagram. Note it does NOT
+    // touch allowClarify below: a focused turn is still often underspecified ("make this
+    // resilient" over two services says nothing about retries), and a second code-level ask
+    // rule would fight the runaway-cap-only design documented there.
+    const focusIds = readFocus(req.body, graph);
+
     // Asking is allowed on any turn. A request to change an existing diagram can be exactly as
     // underspecified as the first one, and one answered question usually leaves the next one
     // open — so "never twice in a row" capped every conversation at a single round and
@@ -804,7 +946,7 @@ router.post("/generate", async (req, res) => {
       // generation starts. See MAX_COMPLETION_TOKENS.
       max_tokens: MAX_COMPLETION_TOKENS,
       messages: [
-        { role: "system", content: buildSystemPrompt(allowClarify, graph) },
+        { role: "system", content: buildSystemPrompt(allowClarify, graph, focusIds) },
         ...conversation,
       ],
     });
@@ -926,6 +1068,17 @@ router.post("/generate", async (req, res) => {
           "I didn't get a usable design back that time, so I've left the canvas alone. Try rephrasing?",
       });
       return;
+    }
+
+    // A focused turn is the one most likely to UNDER-return — the model reads "these 3 nodes
+    // matter" and answers with 3 nodes against a canvas of 12, which delete-by-omission turns
+    // into a partial wipe. This is a log line and nothing more: it must never gate the
+    // response, because "delete this node" with that node selected is the most natural focused
+    // edit there is. The real guard is App.tsx's large-removal confirmation.
+    if (focusIds.length > 0 && nodes.length < (graph?.nodes.length ?? 0)) {
+      console.warn(
+        `AI generate: focused turn returned ${nodes.length} nodes against a canvas of ${graph?.nodes.length} — check the focus block is holding.`,
+      );
     }
 
     send({

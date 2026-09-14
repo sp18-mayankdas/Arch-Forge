@@ -5,7 +5,7 @@ import type { AddressInfo } from "net";
 import type { GenerateResponse } from "@archforge/shared";
 // vi.mock is hoisted above imports, so pulling a constant from the module under test here
 // does not defeat the SDK mock below.
-import { MAX_ASK_ROUNDS } from "./ai";
+import { MAX_ASK_ROUNDS, MAX_FOCUS_NODES } from "./ai";
 
 /**
  * Route-level tests for the response contract. These exist because the canvas-wipe bug they
@@ -257,6 +257,101 @@ describe("POST /api/generate", () => {
     const prompt = (create.mock.calls.at(-1)?.[0] as { messages: { content: string }[] })
       .messages[0].content;
     expect(prompt).toContain("CANVAS OBSERVATIONS");
+  });
+
+  describe("focused turns", () => {
+    const reply = () =>
+      (nextContent = JSON.stringify({
+        action: "reply",
+        nodes: [],
+        edges: [],
+        summary: "ok",
+      }));
+
+    const focused = (nodeIds: unknown[]) => ({
+      messages: [{ role: "user", content: "add a cache in front of this" }],
+      graph: POPULATED_GRAPH,
+      focus: { nodeIds },
+    });
+
+    it("carries the marked nodes into the prompt", async () => {
+      reply();
+      await post(focused(["db"]));
+      const prompt = promptOfLastCall();
+      expect(prompt).toContain("FOCUSED NODE");
+      expect(prompt).toContain('- db — "Orders DB" (sql_db)');
+    });
+
+    it("renders no block for an unfocused turn", async () => {
+      reply();
+      await post({
+        messages: [{ role: "user", content: "what's wrong with this?" }],
+        graph: POPULATED_GRAPH,
+      });
+      expect(promptOfLastCall()).not.toContain("FOCUSED NODE");
+    });
+
+    it("treats a focus naming only stale nodes as an ordinary unfocused turn", async () => {
+      reply();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const body = await post(focused(["deleted-by-a-peer"]));
+      expect(body.applied).toBe(false);
+      expect(promptOfLastCall()).not.toContain("FOCUSED NODE");
+      warn.mockRestore();
+    });
+
+    it("does not displace the canvas observations", async () => {
+      reply();
+      await post(focused(["db"]));
+      expect(promptOfLastCall()).toContain("CANVAS OBSERVATIONS");
+    });
+
+    it("does not reopen the ask option at the runaway cap", async () => {
+      reply();
+      await post({ ...editAtAskCap("change this"), focus: { nodeIds: ["db"] } });
+      const prompt = promptOfLastCall();
+      expect(prompt).toContain("FOCUSED NODE");
+      expect(prompt).toContain("You may NOT ask this turn");
+      expect(prompt).not.toContain("reply, ask, or generate");
+    });
+
+    it("clamps an oversized focus rather than rejecting it", async () => {
+      reply();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // Every real id repeated, padded out with fakes — far more than the cap allows.
+      const ids = Array.from({ length: 20 }, (_, i) =>
+        i < 4 ? POPULATED_GRAPH.nodes[i].id : `fake-${i}`,
+      );
+      await post(focused(ids));
+      const prompt = promptOfLastCall();
+      const block = prompt.slice(
+        prompt.indexOf("FOCUSED NODE"),
+        prompt.indexOf("STEP 1 — THINK FIRST"),
+      );
+      expect(block.split("\n").filter((l) => l.startsWith("- ")).length).toBeLessThanOrEqual(
+        MAX_FOCUS_NODES,
+      );
+      warn.mockRestore();
+    });
+
+    it("does not merge the focused answer back into the canvas server-side", async () => {
+      // Pins the deliberate ABSENCE of a merge. Overlaying returned nodes onto the existing
+      // graph when focus is present would make deletion impossible on focused turns — and
+      // "delete this node" with that node selected is the most natural focused edit there is.
+      // The guard against under-returning is App.tsx's large-removal confirmation, not this.
+      nextContent = JSON.stringify({
+        action: "generate",
+        nodes: [{ id: "db", type: "sql_db", label: "Orders DB" }],
+        edges: [],
+        tradeoff: "Orders DB now stands alone, so nothing serves reads.",
+        summary: "Just the database.",
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const body = await post(focused(["db"]));
+      expect(body.applied).toBe(true);
+      expect(body.nodes).toHaveLength(1);
+      warn.mockRestore();
+    });
   });
 
   it("still rejects an empty conversation with a 400", async () => {

@@ -23,9 +23,11 @@ export type {
   ClarifyOption,
   AiChatTurn,
   Suggestion,
+  FocusSelection,
   GenerateRequest,
   GenerateResponse,
 } from "@archforge/shared";
+export type { FocusRef, PeerMark } from "@/lib/focus";
 
 // These stay local — they depend on @xyflow/react.
 import type { Node, Edge } from "@xyflow/react";
@@ -35,6 +37,7 @@ import type {
   ClarifyQuestion,
   Suggestion,
 } from "@archforge/shared";
+import type { FocusRef } from "@/lib/focus";
 
 export type CanvasNode = Node<CanvasNodeData, "canvasNode">;
 export type CanvasEdge = Edge<CanvasEdgeData, "canvasEdge">;
@@ -44,6 +47,15 @@ export interface UserAwareness {
   name: string;
   color: string;
   cursor: { x: number; y: number } | null;
+  /**
+   * Node ids this peer has marked as the scope of their next AI prompt. Ephemeral and
+   * per-viewer, exactly like `cursor`: intent rather than document content, so it lives in
+   * awareness instead of the Yjs maps and is garbage-collected when the peer disconnects.
+   *
+   * Ids only — resolving them to labels is the reader's job. A second copy of the label here
+   * would drift the moment somebody renamed the node.
+   */
+  focus: string[];
 }
 
 // AI chat messages, stored in the shared Yjs doc so they sync across the room
@@ -68,4 +80,15 @@ export interface ChatMessage {
   tradeoff?: string;
   /** Present only when the canvas actually changed. */
   change?: { total: number; delta: number };
+  /**
+   * The nodes the sender had marked when this turn went out. Snapshotted WITH labels rather
+   * than as bare ids, because the node may be renamed or deleted later and a replayed
+   * transcript must still say what was focused AT THE TIME.
+   *
+   * Display only. `toChatHistory` rebuilds every turn from role and content, so this never
+   * reaches the provider — the live scope crosses the wire on `GenerateRequest.focus`
+   * instead. It must never be folded into `content`, which is resent on every later turn and
+   * would keep steering the model after the user deselected.
+   */
+  focus?: FocusRef[];
 }

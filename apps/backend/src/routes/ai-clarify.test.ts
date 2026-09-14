@@ -4,13 +4,16 @@ import {
   validateSuggestions,
   readConversation,
   readGraph,
+  readFocus,
   countTrailingAskTurns,
   buildSystemPrompt,
   MAX_ASK_ROUNDS,
   MAX_QUESTIONS,
   MAX_OPTIONS,
   MAX_SUGGESTIONS,
+  MAX_FOCUS_NODES,
 } from "./ai";
+import type { SerializedGraph } from "@archforge/shared";
 
 const opts = (n: number) =>
   Array.from({ length: n }, (_, i) => ({
@@ -160,6 +163,94 @@ describe("readGraph", () => {
     expect(graph?.nodes).toHaveLength(1);
     expect(graph?.edges).toEqual([]);
     expect(graph?.v).toBe(0);
+  });
+});
+
+describe("readFocus", () => {
+  const GRAPH = readGraph({
+    graph: {
+      v: 3,
+      nodes: [
+        { id: "db", t: "sql_db", l: "Orders DB" },
+        { id: "api", t: "api_gateway", l: "API Gateway" },
+        { id: "svc", t: "service", l: "Orders Service" },
+      ],
+      edges: [],
+    },
+  });
+
+  const silenced = <T,>(fn: () => T): T => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      return fn();
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  it("reads a well-formed focus against a matching graph", () => {
+    expect(readFocus({ focus: { nodeIds: ["db", "svc"] } }, GRAPH)).toEqual(["db", "svc"]);
+  });
+
+  it("returns an empty focus when the field is absent or malformed", () => {
+    expect(readFocus({}, GRAPH)).toEqual([]);
+    expect(readFocus(undefined, GRAPH)).toEqual([]);
+    expect(readFocus({ focus: "db" }, GRAPH)).toEqual([]);
+    expect(readFocus({ focus: { nodeIds: "db" } }, GRAPH)).toEqual([]);
+  });
+
+  it("returns an empty focus when there is no graph, since there is nothing to validate against", () => {
+    expect(readFocus({ focus: { nodeIds: ["db"] } }, null)).toEqual([]);
+  });
+
+  it("drops ids naming no node and keeps the rest — a peer deleting your selection is normal", () => {
+    expect(silenced(() => readFocus({ focus: { nodeIds: ["db", "gone"] } }, GRAPH))).toEqual([
+      "db",
+    ]);
+  });
+
+  it("treats an all-stale focus as no focus at all, rather than as an error", () => {
+    // These must be INDISTINGUISHABLE: a 400 here would surface another user's edit as this
+    // user's failure, and the turn is still perfectly answerable against the whole canvas.
+    const stale = silenced(() => readFocus({ focus: { nodeIds: ["gone", "also-gone"] } }, GRAPH));
+    expect(stale).toEqual(readFocus({}, GRAPH));
+  });
+
+  it("dedupes, preserving the order the user marked things in", () => {
+    expect(readFocus({ focus: { nodeIds: ["svc", "db", "svc"] } }, GRAPH)).toEqual(["svc", "db"]);
+  });
+
+  it("drops non-strings, blanks and padded ids — an id is compared byte-identically", () => {
+    const out = silenced(() =>
+      readFocus({ focus: { nodeIds: ["", 7, null, " db", "db"] } }, GRAPH),
+    );
+    expect(out).toEqual(["db"]);
+  });
+
+  it("clamps to the cap, keeping the first N", () => {
+    const graph = readGraph({
+      graph: {
+        nodes: Array.from({ length: MAX_FOCUS_NODES + 5 }, (_, i) => ({
+          id: `n${i}`,
+          t: "service",
+          l: `N${i}`,
+        })),
+        edges: [],
+      },
+    });
+    const ids = Array.from({ length: MAX_FOCUS_NODES + 5 }, (_, i) => `n${i}`);
+    const out = silenced(() => readFocus({ focus: { nodeIds: ids } }, graph));
+    expect(out).toHaveLength(MAX_FOCUS_NODES);
+    expect(out[0]).toBe("n0");
+  });
+
+  it("cannot smuggle presentation across the AI boundary", () => {
+    // The counterpart of serializeGraph's no-presentation-key assertion: coordinates must not
+    // reach the prompt through this door either, whether as an id or as a sibling field.
+    expect(silenced(() => readFocus({ focus: { nodeIds: [{ id: "db", x: 10, y: 20 }] } }, GRAPH)))
+      .toEqual([]);
+    expect(readFocus({ focus: { nodeIds: ["db"], positions: { db: { x: 1, y: 2 } } } }, GRAPH))
+      .toEqual(["db"]);
   });
 });
 
@@ -411,5 +502,90 @@ describe("buildSystemPrompt", () => {
     });
     expect(prompt).toContain("THE CHANGE ONLY");
     expect(prompt).toContain("Orders DB");
+  });
+
+  describe("focused turns", () => {
+    const GRAPH: SerializedGraph = {
+      v: 2,
+      nodes: [
+        { id: "orders-db", t: "sql_db", l: "Orders DB" },
+        { id: "api", t: "api_gateway", l: "API Gateway" },
+        { id: "svc", t: "service", l: "Orders Service" },
+      ],
+      edges: [{ id: "e1", f: "api", to: "svc" }],
+    };
+
+    /** The focus block, isolated from everything around it. */
+    const blockOf = (prompt: string) =>
+      prompt.slice(prompt.indexOf("FOCUSED NODE"), prompt.indexOf("STEP 1 — THINK FIRST"));
+
+    it("renders no block when nothing is focused", () => {
+      expect(buildSystemPrompt(true, GRAPH)).not.toContain("FOCUSED NODE");
+    });
+
+    it("renders the marked nodes as a bulleted list with id, label and type", () => {
+      const prompt = buildSystemPrompt(true, GRAPH, ["orders-db", "svc"]);
+      expect(prompt).toContain('- orders-db — "Orders DB" (sql_db)');
+      expect(prompt).toContain('- svc — "Orders Service" (service)');
+      expect(prompt).toContain("selected 2 of the 3 nodes");
+    });
+
+    it("renders the block as prose, never as JSON", () => {
+      // The direct test of the anti-mirroring decision. A JSON focus array would put a SECOND,
+      // shorter node array in context using the same keys the model must output — and since
+      // anything omitted is deleted, an echo of that array is a canvas wipe.
+      const block = blockOf(buildSystemPrompt(true, GRAPH, ["orders-db"]));
+      expect(block).not.toContain("{");
+      expect(block).not.toContain('"id":');
+    });
+
+    it("keeps the full-replacement contract intact — scoping intent must not scope output", () => {
+      const prompt = buildSystemPrompt(true, GRAPH, ["orders-db"]);
+      expect(prompt).toContain("return the COMPLETE set of nodes and edges");
+      const block = blockOf(prompt);
+      expect(block).toContain("COMPLETE canvas");
+      expect(block).toContain("DELETES everything else");
+      // Turns the model's own AUDIT line into a delete-by-omission tripwire.
+      expect(block).toContain('"nodes-after"');
+      expect(block).toContain('not be lower than');
+    });
+
+    it("puts the block after the replacement contract and the observations, just before STEP 1", () => {
+      const prompt = buildSystemPrompt(true, GRAPH, ["orders-db"]);
+      // Placement is load-bearing: if the short focus list were the last thing read before
+      // "return the COMPLETE set", it would prime exactly the truncated answer it warns about.
+      expect(prompt.indexOf("RE-STATE THE EDGES TOO")).toBeLessThan(
+        prompt.indexOf("FOCUSED NODE"),
+      );
+      expect(prompt.indexOf("FOCUSED NODE")).toBeLessThan(
+        prompt.indexOf("STEP 1 — THINK FIRST"),
+      );
+    });
+
+    it("agrees with itself about singular and plural", () => {
+      const one = buildSystemPrompt(true, GRAPH, ["orders-db"]);
+      expect(one).toContain("FOCUSED NODE —");
+      expect(one).toContain("this node");
+      const two = buildSystemPrompt(true, GRAPH, ["orders-db", "api"]);
+      expect(two).toContain("FOCUSED NODES —");
+      expect(two).toContain("these nodes");
+    });
+
+    it("renders nothing when there is no canvas to resolve the ids against", () => {
+      // The builder resolves labels itself, so it cannot be handed a phantom id by a caller
+      // that skipped readFocus.
+      expect(buildSystemPrompt(true, null, ["orders-db"])).not.toContain("FOCUSED NODE");
+      expect(buildSystemPrompt(true, GRAPH, ["not-a-node"])).not.toContain("FOCUSED NODE");
+    });
+
+    it("does not reopen the ask when asking is disallowed", () => {
+      // The regression guard for the focusAsk gate: focus text mentioning asking would
+      // reintroduce the option through a side door, past the assertions above.
+      const prompt = buildSystemPrompt(false, GRAPH, ["orders-db"]);
+      expect(prompt).toContain("FOCUSED NODE");
+      expect(prompt).toContain("You may NOT ask this turn");
+      expect(prompt).not.toContain('"ask" —');
+      expect(prompt).not.toContain("ask only about");
+    });
   });
 });

@@ -65,6 +65,9 @@ export function createRoom(roomId: string): Room {
   const user = getUserInfo();
   provider.awareness.setLocalStateField("user", user);
   provider.awareness.setLocalStateField("cursor", null);
+  // Initialised here, alongside cursor, so a peer who joins mid-session never reads it as
+  // undefined before this client has marked anything.
+  provider.awareness.setLocalStateField("focus", []);
 
   const room: Room = { doc, provider, messagesArray, user };
   roomCache.set(roomId, room);

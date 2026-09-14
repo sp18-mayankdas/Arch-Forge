@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, KeyboardEvent } from "react";
-import { Bot, Send, Loader2, X, Sparkles, Square, TriangleAlert } from "lucide-react";
+import { Bot, Send, Loader2, X, Sparkles, Square, TriangleAlert, Crosshair } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { API_URL } from "@/lib/config";
 import type {
@@ -7,14 +7,17 @@ import type {
   SemanticEdge,
   SerializedGraph,
   ChatMessage,
+  FocusRef,
   GenerateRequest,
   GenerateResponse,
 } from "@/types/canvas";
 import { toChatHistory } from "@/lib/ai-history";
+import { summarizeFocus } from "@/lib/focus";
 import { ClarifyRecord } from "./ClarifyRecord";
 import { ClarifyStepper } from "./ClarifyStepper";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { Suggestions } from "./Suggestions";
+import { FocusBar } from "./FocusBar";
 
 const STARTER_CHIPS = [
   "Design an e-commerce backend",
@@ -47,6 +50,11 @@ interface AiSidebarProps {
   /** False until the room's history has arrived, so a reload shows a loader instead of
    * flashing the empty state over a transcript that is about to appear. */
   synced: boolean;
+  /** The nodes the user has marked on the canvas — the scope of the next turn. Resolved to
+   * labels by App, which is where the live graph is. Empty means "the whole canvas". */
+  focus: FocusRef[];
+  onUnfocus: (id: string) => void;
+  onClearFocus: () => void;
 }
 
 export function AiSidebar({
@@ -60,6 +68,9 @@ export function AiSidebar({
   messages,
   addMessage,
   synced,
+  focus,
+  onUnfocus,
+  onClearFocus,
 }: AiSidebarProps) {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -90,11 +101,21 @@ export function AiSidebar({
       const content = text.trim();
       if (!content || isLoading) return;
 
+      // Snapshotted here, not read inside the async body: `send` is asynchronous, and
+      // unmarking a node mid-flight must not retroactively change what this turn was scoped
+      // to. Same reason `history` is captured below.
+      const focusSnapshot = focus;
+      const focusIds = focusSnapshot.map((f) => f.id);
+
       const userMsg: ChatMessage = {
         // Timestamp alone collided as a React key when chips were clicked in quick succession.
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         role: "user",
         content,
+        // Display only, and deliberately NOT folded into `content` — content is resent on
+        // every later turn, so a scope baked into it would keep steering the model long
+        // after the user deselected.
+        focus: focusSnapshot.length ? focusSnapshot : undefined,
       };
 
       // The transcript is the request. Capture it here rather than reading `messages`
@@ -121,6 +142,9 @@ export function AiSidebar({
             messages: history,
             graph: readGraphForAi(),
             projectId,
+            // Ids only. The server resolves them against the graph it just received, so a
+            // node deleted by a peer mid-request is dropped rather than invented.
+            focus: focusIds.length ? { nodeIds: focusIds } : undefined,
           } satisfies GenerateRequest),
           signal: controller.signal,
         });
@@ -169,7 +193,18 @@ export function AiSidebar({
         scrollToBottom();
       }
     },
-    [messages, isLoading, onApplyDesign, readGraphForAi, scrollToBottom, addMessage, projectId]
+    // `focus` belongs here: Suggestions and ClarifyStepper both hold a reference to this
+    // callback, so a stale one would send their turn with a scope the user has since changed.
+    [
+      messages,
+      isLoading,
+      onApplyDesign,
+      readGraphForAi,
+      scrollToBottom,
+      addMessage,
+      projectId,
+      focus,
+    ]
   );
 
   const handleSend = useCallback(() => {
@@ -271,6 +306,10 @@ export function AiSidebar({
                 Describe your system and I'll generate the architecture on the canvas for all
                 collaborators to see.
               </p>
+              <p className="mt-2 flex items-center justify-center gap-1 text-[11px] text-white/25">
+                <Crosshair className="h-2.5 w-2.5" />
+                Click nodes on the canvas to scope a prompt to them.
+              </p>
             </div>
             <div className="flex w-full flex-col gap-2">
               {STARTER_CHIPS.map((chip) => (
@@ -334,7 +373,16 @@ export function AiSidebar({
                   </div>
                 </div>
               ) : (
-                <div key={msg.id} className="flex justify-end">
+                <div key={msg.id} className="flex flex-col items-end gap-1">
+                  {/* Above the bubble, so the reading order is scope-then-request. Rendered
+                      from the snapshot on the message, not from the live selection, so a
+                      replayed transcript says what was focused at the time. */}
+                  {msg.focus?.length ? (
+                    <span className="flex items-center gap-1 pr-1 text-[10px] text-white/35">
+                      <Crosshair className="h-2.5 w-2.5 text-[#a89dfc]/70" />
+                      {summarizeFocus(msg.focus)}
+                    </span>
+                  ) : null}
                   <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-[#6457f9] px-3.5 py-2.5 text-xs font-medium text-white leading-5">
                     {msg.content}
                   </div>
@@ -362,6 +410,16 @@ export function AiSidebar({
       {/* Composer slot — the stepper takes it over while a round is live, so there is exactly
           one thing to act on and no ambiguity about whether to type or pick. */}
       <div className="shrink-0 border-t border-white/8 p-3">
+        {/* Above the ternary, not inside either branch. A focused opening prompt usually
+            returns questions, so the very next turn is the stepper's folded answer — which
+            goes through the same send() and carries the same scope. Hiding the bar while the
+            stepper is up would leave no way to see or amend it. */}
+        <FocusBar
+          refs={focus}
+          onUnfocus={onUnfocus}
+          onClear={onClearFocus}
+          disabled={isLoading}
+        />
         {stepperOpen && activeRound?.questions ? (
           <ClarifyStepper
             // Remount per round: the step index and picks must not survive into the next one.

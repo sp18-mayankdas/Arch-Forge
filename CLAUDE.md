@@ -153,6 +153,42 @@ complicated, simplify it" made the diagram *bigger*, because the model designed 
 - The prompt must insist edges are re-stated too — they are deleted by omission exactly like nodes,
   and a model told only to think about nodes will silently return a graph with none.
 
+### Focus — scoping a prompt to marked nodes
+
+Clicking nodes marks them, and the marked ids ride the request as `GenerateRequest.focus`
+(`{ nodeIds }`, ids only) so "add a cache in front of this" has a referent. **Focus is a third
+layer beside semantic and presentation, and the only per-viewer one:** it is one person's intent
+for one turn, so it lives in React state mirrored onto Yjs **awareness** exactly like `cursor` —
+never a Yjs map (which would keep a departed peer's marks forever), never a `SemanticOp`, never
+anything that bumps `ops.length`. A snapshot with labels is stored on `ChatMessage.focus` for
+transcript replay, and is display-only: `toChatHistory` strips it, and folding it into `content`
+would resend the scope every later turn, the same failure documented for `tradeoff` in `summary`.
+
+- **Marking IS React Flow selection**, and focus state is the source of truth for it. `buildNodes`
+  rebuilds every node object on any Yjs change and carries no `selected`, so `App.tsx` derives
+  `selected: focusSet.has(id)` — explicitly **both** true and false — and folds `select` changes
+  back in through a wrapped `onNodesChange`. Box-select, cmd-click and pane-click-to-clear then
+  need no handlers of their own. `pruneFocus` **must return the same array reference when nothing
+  was removed**, or the prune effect is an infinite render loop.
+- **`readFocus` validates ids against the same graph the prompt renders**, drops unknown ones and
+  clamps to `MAX_FOCUS_NODES`. Absent, empty and all-stale are deliberately indistinguishable —
+  a peer deleting your selection mid-request is normal operation, not a 400.
+- **The focus block is prose bullets, never JSON.** The canvas block uses the key names the model
+  must output because models mirror what they are shown; here that law runs the other way. A JSON
+  focus array would put a second, shorter node array in context under those same keys, and an echo
+  of it is a canvas wipe. It sits after the full-replacement contract and after `CANVAS
+  OBSERVATIONS`, immediately before STEP 1 — placement is load-bearing, not formatting.
+- **Scoping intent must never scope output.** The block restates that the complete canvas comes
+  back regardless, and constrains the existing `nodes-after` AUDIT field rather than adding one.
+  There is deliberately **no server-side merge**: overlaying returned nodes onto the existing graph
+  would make deletion impossible on focused turns, and "delete this node" with that node selected
+  is the most natural focused edit there is. A route test pins that absence.
+- Its ask examples are gated on `allowClarify` — when asking is disallowed the option must be
+  *absent*, and focus text mentioning it would reintroduce it through a side door.
+- Focus does **not** touch `allowClarify`, `validateSuggestions` or `canvas-observations.ts`. The
+  last is the subtle one: `MAX_OBSERVATIONS` is a `slice` applied *after* rule evaluation, so
+  reordering by focus would silently delete true facts about the rest of the canvas.
+
 ### Delete-by-omission is load-bearing, and dangerous — the guards are not optional
 
 Because omitted nodes are deleted, **any turn that returns an empty design is a canvas wipe.** The

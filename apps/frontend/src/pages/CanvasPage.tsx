@@ -19,11 +19,14 @@ import { GhostCanvas } from "@/components/canvas/GhostCanvas";
 import { AiSidebar } from "@/components/AiSidebar";
 import { useYjsSync } from "@/hooks/useYjsSync";
 import { useSidebarWidth } from "@/hooks/useSidebarWidth";
+import { useFocus } from "@/hooks/useFocus";
 import { createRoom } from "@/lib/yjs";
 import { applyOps, setPositions, readSemanticGraph, diffToOps } from "@/lib/semantic-ops";
 import { layoutGraph } from "@/lib/layout";
+import { groupPeerFocus, peerFocusKey, resolveFocus } from "@/lib/focus";
 import { serializeGraph } from "@/types/canvas";
-import type { SemanticNode, SemanticEdge } from "@/types/canvas";
+import type { CanvasNode, SemanticNode, SemanticEdge } from "@/types/canvas";
+import type { NodeChange } from "@xyflow/react";
 import { getProject, updateProject } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -108,6 +111,53 @@ export function CanvasPage() {
     addEdges,
     addMessage,
   } = useYjsSync({ doc, messagesArray, awareness: provider.awareness });
+
+  const liveNodeIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
+  const { focusIds, focusSet, applySelection, unfocus, clearFocus } = useFocus({
+    liveNodeIds,
+    awareness: provider.awareness,
+  });
+
+  /**
+   * Selection IS the mark, and focus state is the source of truth for it.
+   *
+   * buildNodes rebuilds every node object from Yjs on any change — including a remote peer's
+   * drag — and carries no `selected`, so React Flow's own selection is wiped constantly. Both
+   * flags are set explicitly here rather than only the true ones, so this derived array is
+   * fully authoritative over whatever applyNodeChanges left in useYjsSync's internal state.
+   */
+  const canvasNodes = useMemo(
+    () => nodes.map((n) => ({ ...n, selected: focusSet.has(n.id) })),
+    [nodes, focusSet]
+  );
+
+  /** The other half of the round-trip: every marking gesture — plain click, shift-drag box
+   * select, cmd-click, click on empty pane — reaches us as a `select` change. */
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<CanvasNode>[]) => {
+      const selections = changes.filter(
+        (c): c is Extract<NodeChange<CanvasNode>, { type: "select" }> => c.type === "select"
+      );
+      if (selections.length > 0) {
+        applySelection(selections.map((c) => ({ id: c.id, selected: c.selected })));
+      }
+      onNodesChange(changes);
+    },
+    [applySelection, onNodesChange]
+  );
+
+  const nodeLabels = useMemo(() => new Map(nodes.map((n) => [n.id, n.data.label])), [nodes]);
+  const focus = useMemo(() => resolveFocus(focusIds, nodeLabels), [focusIds, nodeLabels]);
+
+  // Deliberately keyed on the focus payload rather than on `collaborators`: that array is
+  // rebuilt on every remote CURSOR move, and re-rendering every node in the room 60x a second
+  // to redraw rings that did not change is a real regression.
+  const peerFocusSignature = peerFocusKey(collaborators);
+  const peerFocus = useMemo(
+    () => groupPeerFocus(collaborators),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [peerFocusSignature]
+  );
 
   // Connect on mount, disconnect on unmount. Because navigation is client-side (no page
   // reload), this is what drops our presence when leaving a project and reconnects on return.
@@ -275,11 +325,12 @@ export function CanvasPage() {
       <div className="relative flex-1 overflow-hidden">
         <ReactFlowProvider>
           <GhostCanvas
-            nodes={nodes}
+            nodes={canvasNodes}
             edges={edges}
             collaborators={collaborators}
+            peerFocus={peerFocus}
             awareness={provider.awareness}
-            onNodesChange={onNodesChange}
+            onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
             addEdges={addEdges}
           />
@@ -339,6 +390,9 @@ export function CanvasPage() {
           messages={messages}
           addMessage={addMessage}
           synced={synced}
+          focus={focus}
+          onUnfocus={unfocus}
+          onClearFocus={clearFocus}
         />
       </div>
     </div>

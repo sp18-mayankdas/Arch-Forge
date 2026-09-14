@@ -65,11 +65,28 @@ export interface AiChatTurn {
 }
 
 /**
+ * The nodes the user has marked on the canvas, scoping the turn to a part of the diagram.
+ *
+ * IDS ONLY — never labels, positions, sizes or colours, for the same reason `serializeGraph`
+ * picks its fields explicitly: this is the AI boundary, and the model sees topology or
+ * nothing. The server resolves these against `graph`, which already carries the labels;
+ * sending a second copy of a label here would let the two drift.
+ *
+ * An object rather than a bare `string[]` so it can later carry `edgeIds` without a wire
+ * rename, and so the call site reads as `focus: { nodeIds: marked }`.
+ */
+export interface FocusSelection {
+  /** Byte-identical to `SerializedGraph.nodes[].id`. */
+  nodeIds: string[];
+}
+
+/**
  * The `POST /api/generate` body. The server deliberately does NOT parse against this — it
- * reads each field defensively (`readConversation` / `readGraph` / `readAskedLast`) because
- * the wire is untrusted and a cast would be a lie. This exists so the client's body is
- * compile-checked against one definition. The legacy single-turn `{ prompt }` form is still
- * accepted by the server but is not part of the typed client body.
+ * reads each field defensively (`readConversation` / `readGraph` / `readFocus` /
+ * `countTrailingAskTurns`) because the wire is untrusted and a cast would be a lie. This
+ * exists so the client's body is compile-checked against one definition. The legacy
+ * single-turn `{ prompt }` form is still accepted by the server but is not part of the typed
+ * client body.
  */
 export interface GenerateRequest {
   messages: AiChatTurn[];
@@ -78,6 +95,15 @@ export interface GenerateRequest {
    * the legacy single-turn `{ prompt }` form has no project context; usage simply goes
    * unrecorded in that case. */
   projectId?: string;
+  /**
+   * Applies to THIS turn only and is never inferred from the transcript — which is exactly
+   * why it rides here and not on `AiChatTurn`. Folded into a turn's `content` it would be
+   * resent on every later call and keep scoping the conversation after the user deselected.
+   *
+   * Absent, empty, and "every id names a node that no longer exists" all mean the same
+   * thing: an unfocused turn about the whole canvas.
+   */
+  focus?: FocusSelection;
 }
 
 /**

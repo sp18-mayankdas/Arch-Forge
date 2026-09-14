@@ -67,3 +67,46 @@ it.skipIf(!backendUp)("syncs the semantic layer and keeps positions out of the v
     p2.destroy();
   }
 }, 20000);
+
+it.skipIf(!backendUp)("broadcasts focus over awareness without touching the document", async () => {
+  // Focus is per-viewer intent, so it rides awareness exactly like the cursor. Only a real
+  // relay can catch a field that fails to propagate — and only this file has two real peers.
+  const room = `e2e-focus-${Math.random().toString(36).slice(2, 10)}`;
+  const doc1 = new Y.Doc();
+  const doc2 = new Y.Doc();
+  const opts = { connect: true };
+  const p1 = new WebsocketProvider("ws://localhost:3001", room, doc1, opts);
+  const p2 = new WebsocketProvider("ws://localhost:3001", room, doc2, opts);
+
+  const focusSeenByPeer2 = () => {
+    for (const [clientId, state] of p2.awareness.getStates()) {
+      if (clientId === p2.awareness.clientID) continue;
+      return (state as { focus?: string[] }).focus ?? null;
+    }
+    return null;
+  };
+
+  try {
+    await waitFor(() => p1.wsconnected && p2.wsconnected, "both peers connected");
+    applyOps(doc1, [{ op: "add_node", id: "a", type: "service", label: "A" }]);
+    await waitFor(() => getMaps(doc2).nodesMap.size === 1, "peer 2 received the node");
+    const versionBefore = readSemanticGraph(doc2).version;
+
+    p1.awareness.setLocalStateField("focus", ["a", "b"]);
+    await waitFor(
+      () => focusSeenByPeer2()?.length === 2,
+      "peer 2 saw peer 1's marks",
+    );
+    expect(focusSeenByPeer2()).toEqual(["a", "b"]);
+
+    // Marking is not an edit: it must leave the version — and therefore the graph — alone.
+    expect(readSemanticGraph(doc2).version).toBe(versionBefore);
+    expect(getMaps(doc2).nodesMap.size).toBe(1);
+
+    p1.awareness.setLocalStateField("focus", []);
+    await waitFor(() => focusSeenByPeer2()?.length === 0, "peer 2 saw the marks cleared");
+  } finally {
+    p1.destroy();
+    p2.destroy();
+  }
+}, 20000);

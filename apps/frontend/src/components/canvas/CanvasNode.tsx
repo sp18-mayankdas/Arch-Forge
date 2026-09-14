@@ -2,10 +2,19 @@ import { Handle, Position, NodeResizer } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import type { CanvasNode, NodeShape, NodeType } from "@/types/canvas";
 import { NODE_COLORS, NODE_TYPE_REGISTRY } from "@/types/canvas";
+import { usePeerMarks } from "./FocusContext";
 
 const BORDER_REST = "rgba(255,255,255,0.1)";
 const BORDER_SELECTED = "rgba(255,255,255,0.4)";
 const RESIZER_COLOR = "rgba(255,255,255,0.3)";
+
+// Selecting a node is how you scope a prompt to it, so selection carries more meaning than
+// "about to drag this" and earns more than a 1px border tint. The halo is drawn as its own
+// absolutely-positioned layer rather than folded into `stroke`, so it reads identically on all
+// six shapes — three of which are SVG polygons with no CSS border to thicken.
+const FOCUS_RING = "#a89dfc";
+const FOCUS_GLOW = "rgba(100,87,249,0.35)";
+const MAX_PEER_DOTS = 3;
 
 const HANDLE_CLS =
   "!h-2.5 !w-2.5 !rounded-full !border-2 !border-[#0e0e0e] !bg-white opacity-0 transition-opacity group-hover/node:opacity-100";
@@ -73,6 +82,10 @@ export function CanvasNodeComponent({ id, data, selected }: NodeProps<CanvasNode
   const stroke = selected ? BORDER_SELECTED : BORDER_REST;
   const isSvg = shape === "diamond" || shape === "hexagon" || shape === "cylinder";
 
+  // Who else has this node marked. Local and remote marks nest rather than compete: the purple
+  // halo sits inside, each peer's ring outside it.
+  const peerMarks = usePeerMarks(id);
+
   const label = (
     <span
       className={isSvg ? "relative z-10 truncate px-3 text-center" : "truncate px-3 text-center"}
@@ -95,6 +108,42 @@ export function CanvasNodeComponent({ id, data, selected }: NodeProps<CanvasNode
         handleStyle={RESIZER_HANDLE_STYLE}
         lineStyle={RESIZER_LINE_STYLE}
       />
+
+      {/* Outside the isSvg branch below, so every shape gets the same treatment, and
+          pointer-events-none is mandatory: without it these layers sit over the node and
+          swallow the group-hover that reveals the connection handles, silently breaking edge
+          creation. The negative insets are safe because this root div has no overflow-hidden. */}
+      {selected && (
+        <div
+          className="pointer-events-none absolute -inset-1.5 rounded-[14px]"
+          style={{ boxShadow: `0 0 0 2px ${FOCUS_RING}, 0 0 16px ${FOCUS_GLOW}` }}
+        />
+      )}
+      {peerMarks.length > 0 && (
+        <>
+          <div
+            className="pointer-events-none absolute -inset-2.75 rounded-[18px] opacity-80"
+            style={{ boxShadow: `0 0 0 2px ${peerMarks[0].color}` }}
+          />
+          <div className="pointer-events-none absolute -right-2.5 -top-3.5 flex -space-x-1">
+            {peerMarks.slice(0, MAX_PEER_DOTS).map((p) => (
+              <div
+                key={p.userId}
+                title={`${p.name} is asking about this`}
+                className="flex h-4 w-4 items-center justify-center rounded-full border border-[#0e0e0e] text-[8px] font-bold text-white"
+                style={{ background: p.color }}
+              >
+                {p.name[0]?.toUpperCase()}
+              </div>
+            ))}
+            {peerMarks.length > MAX_PEER_DOTS && (
+              <div className="flex h-4 items-center rounded-full border border-[#0e0e0e] bg-[#2a2a2a] px-1 text-[8px] font-bold text-white/70">
+                +{peerMarks.length - MAX_PEER_DOTS}
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {isSvg ? (
         <>

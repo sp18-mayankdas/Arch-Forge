@@ -15,6 +15,8 @@ import type { UserAwareness } from "@/types/canvas";
 import { CanvasNodeComponent } from "./CanvasNode";
 import { CanvasEdgeComponent } from "./CanvasEdge";
 import { PresenceCursors } from "./PresenceCursors";
+import { PeerFocusProvider } from "./FocusContext";
+import type { PeerMark } from "@/lib/focus";
 import type { Awareness } from "y-protocols/awareness";
 
 const nodeTypes = { canvasNode: CanvasNodeComponent };
@@ -29,6 +31,9 @@ interface GhostCanvasProps {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
   collaborators: UserAwareness[];
+  /** What each peer has marked, indexed by node id. Passed down as context so the node can
+   *  draw its own ring — React Flow constructs node components itself. */
+  peerFocus: Map<string, PeerMark[]>;
   awareness: Awareness;
   onNodesChange: ReturnType<typeof import("@/hooks/useYjsSync").useYjsSync>["onNodesChange"];
   onEdgesChange: ReturnType<typeof import("@/hooks/useYjsSync").useYjsSync>["onEdgesChange"];
@@ -39,6 +44,7 @@ export function GhostCanvas({
   nodes,
   edges,
   collaborators,
+  peerFocus,
   awareness,
   onNodesChange,
   onEdgesChange,
@@ -76,36 +82,42 @@ export function GhostCanvas({
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
     >
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        connectionMode={ConnectionMode.Loose}
-        connectionLineType={ConnectionLineType.SmoothStep}
-        connectionLineStyle={{ stroke: "rgba(255,255,255,0.35)", strokeWidth: 1.5 }}
-        fitView
-        proOptions={{ hideAttribution: true }}
-        style={{ background: "#0e0e0e" }}
-      >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={24}
-          size={1.5}
-          color="rgba(255,255,255,0.06)"
-        />
-        <Controls
-          style={{
-            background: "#1a1a1a",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 12,
-          }}
-        />
-        <PresenceCursors collaborators={collaborators} />
-      </ReactFlow>
+      {/* Marking a node for the AI IS selecting it, so there is deliberately no
+          onSelectionChange / selectionMode / multiSelectionKeyCode here: React Flow's default
+          gestures already emit `select` changes through onNodesChange, which is where the
+          marked set is kept. Adding a second selection channel would fight that one. */}
+      <PeerFocusProvider value={peerFocus}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          connectionMode={ConnectionMode.Loose}
+          connectionLineType={ConnectionLineType.SmoothStep}
+          connectionLineStyle={{ stroke: "rgba(255,255,255,0.35)", strokeWidth: 1.5 }}
+          fitView
+          proOptions={{ hideAttribution: true }}
+          style={{ background: "#0e0e0e" }}
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={24}
+            size={1.5}
+            color="rgba(255,255,255,0.06)"
+          />
+          <Controls
+            style={{
+              background: "#1a1a1a",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 12,
+            }}
+          />
+          <PresenceCursors collaborators={collaborators} />
+        </ReactFlow>
+      </PeerFocusProvider>
     </div>
   );
 }

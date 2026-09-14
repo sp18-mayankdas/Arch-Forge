@@ -58,6 +58,22 @@ describe("toChatHistory", () => {
     expect(out.map((t) => t.asked)).toEqual([undefined, true, undefined, false]);
   });
 
+  it("never forwards the focus marker to the wire", () => {
+    // The marker on a user turn is display-only. If it rode along in the transcript it would be
+    // resent on every later call, and the model would keep answering about nodes the user has
+    // since unmarked — the live scope crosses on GenerateRequest.focus instead. toEqual so a
+    // refactor to a spread fails here rather than leaking quietly.
+    expect(
+      toChatHistory([
+        {
+          role: "user",
+          content: "add a cache in front of this",
+          focus: [{ id: "db", label: "Orders DB" }],
+        } as Parameters<typeof toChatHistory>[0][number],
+      ])
+    ).toEqual([{ role: "user", content: "add a cache in front of this" }]);
+  });
+
   it("treats a local error turn as not having asked", () => {
     // The sidebar appends its own failure message as an assistant turn; it has no questions,
     // so it must not block the next question.
