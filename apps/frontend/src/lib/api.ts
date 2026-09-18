@@ -1,5 +1,5 @@
 import { API_URL } from "./config";
-import type { UsageResponse } from "@archforge/shared";
+import type { UsageResponse, SemanticNode, SemanticEdge } from "@archforge/shared";
 
 // Project metadata as returned by the backend (the Yjs canvas/chat state is NOT here —
 // that syncs over the WebSocket and is persisted server-side).
@@ -54,4 +54,17 @@ export function projectPath(id: string): string {
 
 export function getUsage(): Promise<UsageResponse> {
   return fetch(`${API_URL}/api/usage`).then((r) => asJson<UsageResponse>(r));
+}
+
+export async function generateScaffold(
+  graph: { nodes: SemanticNode[]; edges: SemanticEdge[] },
+  projectName?: string
+): Promise<Blob> {
+  const res = await fetch(`${API_URL}/api/scaffold`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...graph, projectName }),
+  });
+  if (!res.ok) throw new Error(`Scaffold generation failed: ${res.status} ${res.statusText}`);
+  return res.blob();
 }

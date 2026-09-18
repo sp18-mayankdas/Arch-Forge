@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ArrowLeft,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GhostCanvas } from "@/components/canvas/GhostCanvas";
@@ -24,7 +25,8 @@ import { applyOps, setPositions, readSemanticGraph, diffToOps } from "@/lib/sema
 import { layoutGraph } from "@/lib/layout";
 import { serializeGraph } from "@/types/canvas";
 import type { SemanticNode, SemanticEdge } from "@/types/canvas";
-import { getProject, updateProject } from "@/lib/api";
+import { getProject, updateProject, generateScaffold } from "@/lib/api";
+import { downloadBlob } from "@/lib/download-blob";
 import { cn } from "@/lib/utils";
 
 const REMOVAL_CONFIRM_RATIO = 1 / 3;
@@ -41,6 +43,7 @@ export function CanvasPage() {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
@@ -168,6 +171,24 @@ export function CanvasPage() {
     setTimeout(() => setCopied(false), 2000);
   }, []);
 
+  const handleExportScaffold = useCallback(async () => {
+    setExporting(true);
+    try {
+      const { nodes, edges } = readSemanticGraph(doc);
+      const blob = await generateScaffold({ nodes, edges }, project?.title);
+      const filename = `${(project?.title ?? "archforge-scaffold")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")}.zip`;
+      downloadBlob(blob, filename);
+      toast.success("Scaffold downloaded");
+    } catch {
+      toast.error("Couldn't generate the scaffold — try again?");
+    } finally {
+      setExporting(false);
+    }
+  }, [doc, project]);
+
   const onlineCount = collaborators.length + 1;
 
   return (
@@ -254,6 +275,16 @@ export function CanvasPage() {
           >
             {copied ? <Check className="h-3 w-3 text-green-400" /> : <Copy className="h-3 w-3" />}
             {copied ? "Copied!" : "Share"}
+          </button>
+
+          <button
+            onClick={handleExportScaffold}
+            disabled={exporting}
+            title="Download a runnable project scaffold matching this diagram"
+            className="flex h-7 items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white/60 transition-all hover:bg-white/8 hover:text-white disabled:opacity-50"
+          >
+            <Download className={cn("h-3 w-3", exporting && "animate-pulse")} />
+            {exporting ? "Generating…" : "Generate Scaffold"}
           </button>
 
           <button

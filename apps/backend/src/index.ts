@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import aiRouter from "./routes/ai";
 import projectsRouter from "./routes/projects";
 import usageRouter from "./routes/usage";
+import scaffoldRouter from "./routes/scaffold";
 import { prisma } from "./db";
 import { setupPersistence, flushAllDocs } from "./persistence";
 
@@ -25,6 +26,7 @@ app.use(express.json());
 app.use("/api", aiRouter);
 app.use("/api", projectsRouter);
 app.use("/api", usageRouter);
+app.use("/api", scaffoldRouter);
 
 app.get("/health", async (_req, res) => {
   let db: "ok" | "down" = "down";
