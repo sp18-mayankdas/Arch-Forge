@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/index.ts",
-    "build": "tsc",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/index.js",
     "start": "node dist/index.js",
     "lint": "eslint src",
     "type-check": "tsc --noEmit",
@@ -32,6 +32,7 @@
     "@types/ws": "^8.5.12",
     "@typescript-eslint/eslint-plugin": "^8.63.0",
     "@typescript-eslint/parser": "^8.63.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.7.0",
     "prisma": "^7.9.1",
     "ts-node-dev": "^2.0.0",
