@@ -3,6 +3,7 @@ export * from "./node-types";
 export * from "./semantic";
 export * from "./clarify";
 export * from "./usage";
+export * from "./scaffold";
 
 import type { NodeType } from "./node-types";
 
