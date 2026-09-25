@@ -4,6 +4,8 @@ import type {
   ProjectAccess,
   ProjectAccessResponse,
   UsageResponse,
+  SemanticNode,
+  SemanticEdge,
 } from "@archforge/shared";
 
 // Project metadata as returned by the backend (the Yjs canvas/chat state is NOT here —
@@ -151,4 +153,17 @@ export function projectPath(id: string): string {
 
 export function getUsage(): Promise<UsageResponse> {
   return request<UsageResponse>("/api/usage");
+}
+
+export async function generateScaffold(
+  graph: { nodes: SemanticNode[]; edges: SemanticEdge[] },
+  projectName?: string
+): Promise<Blob> {
+  const res = await fetch(`${API_URL}/api/scaffold`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...graph, projectName }),
+  });
+  if (!res.ok) throw new Error(`Scaffold generation failed: ${res.status} ${res.statusText}`);
+  return res.blob();
 }

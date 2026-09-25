@@ -9,6 +9,7 @@ import aiRouter from "./routes/ai";
 import authRouter from "./routes/auth";
 import projectsRouter from "./routes/projects";
 import usageRouter from "./routes/usage";
+import scaffoldRouter from "./routes/scaffold";
 import { prisma } from "./db";
 import { resolveProjectAccess } from "./lib/access";
 import { roomIdFromUrl } from "./lib/rooms";
@@ -42,6 +43,7 @@ app.use("/api", authRouter);
 app.use("/api", aiRouter);
 app.use("/api", projectsRouter);
 app.use("/api", usageRouter);
+app.use("/api", scaffoldRouter);
 
 app.get("/health", async (_req, res) => {
   let db: "ok" | "down" = "down";

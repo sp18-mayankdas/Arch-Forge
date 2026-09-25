@@ -4,6 +4,7 @@ export * from "./semantic";
 export * from "./clarify";
 export * from "./usage";
 export * from "./auth";
+export * from "./scaffold";
 
 import type { NodeType } from "./node-types";
 

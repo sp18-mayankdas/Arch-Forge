@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ArrowLeft,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import { GhostCanvas } from "@/components/canvas/GhostCanvas";
@@ -28,7 +29,8 @@ import { groupPeerFocus, peerFocusKey, resolveFocus } from "@/lib/focus";
 import { serializeGraph } from "@/types/canvas";
 import type { CanvasNode, SemanticNode, SemanticEdge } from "@/types/canvas";
 import type { NodeChange } from "@xyflow/react";
-import { getProject, updateProject, ApiError } from "@/lib/api";
+import { getProject, updateProject, generateScaffold, ApiError } from "@/lib/api";
+import { downloadBlob } from "@/lib/download-blob";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +47,7 @@ export function CanvasPage() {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
   const [pendingApply, setPendingApply] = useState<PendingApply | null>(null);
@@ -242,6 +245,24 @@ export function CanvasPage() {
     [doc, writeDesign]
   );
 
+  const handleExportScaffold = useCallback(async () => {
+    setExporting(true);
+    try {
+      const { nodes, edges } = readSemanticGraph(doc);
+      const blob = await generateScaffold({ nodes, edges }, project?.title);
+      const filename = `${(project?.title ?? "archforge-scaffold")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")}.zip`;
+      downloadBlob(blob, filename);
+      toast.success("Scaffold downloaded");
+    } catch {
+      toast.error("Couldn't generate the scaffold — try again?");
+    } finally {
+      setExporting(false);
+    }
+  }, [doc, project]);
+
   const onlineCount = collaborators.length + 1;
 
   if (accessDenied) {
@@ -349,6 +370,16 @@ export function CanvasPage() {
               Share
             </button>
           </ShareDialog>
+
+          <button
+            onClick={handleExportScaffold}
+            disabled={exporting}
+            title="Download a runnable project scaffold matching this diagram"
+            className="flex h-7 items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white/60 transition-all hover:bg-white/8 hover:text-white disabled:opacity-50"
+          >
+            <Download className={cn("h-3 w-3", exporting && "animate-pulse")} />
+            {exporting ? "Generating…" : "Generate Scaffold"}
+          </button>
 
           <button
             onClick={() => setSidebarOpen((o) => !o)}
